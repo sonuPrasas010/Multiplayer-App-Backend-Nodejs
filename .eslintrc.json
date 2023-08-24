@@ -1,0 +1,22 @@
+{
+    "env": {
+        "browser": false,
+        "commonjs": false,
+        "es2021": false
+    },
+    "extends": "standard",
+    "parserOptions": {
+        "ecmaVersion": "latest"
+    },
+    "rules": {
+        "semi": ["off", "always"],
+        "quotes": ["error", "double"],
+        "camelcase" : "warn",
+        "no-trailing-spaces": "off",
+        "space-before-function-paren": "off",
+        "prefer-const": "error",
+        "comma-dangle":"warn",
+        "comma-style":"error",
+        "no-undefined":"error"
+    }
+}
