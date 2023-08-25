@@ -2,7 +2,7 @@ const sequelize = require("./model/config/config");
 
 const relations = require("./model/config/relations");
 const { makeMatch, lowCardGameSocket } = require("./controller/low_card");
-const { getGamePoint, collectGamePoint } = require("./controller/earn_game_point");
+const { getGamePointVideo, collectGamePointVideo } = require("./controller/earn_game_point");
 // const  seedUser  = require("./seeder/user_seeder")();
 
 const port = 8000;
@@ -26,8 +26,8 @@ app.get("/", (req, res) => {
 });
  
 app.get("/make-match", makeMatch);
-app.get("/getGamePoint", getGamePoint);
-app.get("/collectGamePoint", collectGamePoint);
+app.get("/getGamePointVideo", getGamePointVideo);
+app.get("/collectGamePointVideo", collectGamePointVideo);
 
 http.listen(port, async () => {
   console.log(`http://localhost:${port}/makeMatch`);

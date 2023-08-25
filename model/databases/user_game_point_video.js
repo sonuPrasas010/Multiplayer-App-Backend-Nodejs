@@ -15,8 +15,11 @@ const UserGamePointVideo = sequelize.define("user_game_point_video", {
   },
   date: {
     type: DataTypes.DATEONLY,
-    allowNull: false,
+    allowNull: false
     // defaultValue: Date
+  },
+  type: {
+    type: DataTypes.ENUM(["video", "spin"])
   }
 
 });
