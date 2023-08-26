@@ -1,6 +1,5 @@
 const { DataTypes } = require("sequelize");
 const sequelize = require("../config/config");
-const User = require("./user");
 
 const LowCardMatch = sequelize.define("low_card_match", {
   id: {

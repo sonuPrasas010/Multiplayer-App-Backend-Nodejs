@@ -2,7 +2,7 @@ const { DataTypes } = require("sequelize");
 const sequelize = require("../config/config");
 const User = require("./user");
 
-const UserGamePointVideo = sequelize.define("user_game_point_video", {
+const UserCashPointVideo = sequelize.define("user_cash_point_video", {
   watched_time: {
     type: DataTypes.INTEGER,
     allowNull: false,
@@ -24,4 +24,4 @@ const UserGamePointVideo = sequelize.define("user_game_point_video", {
 
 });
 
-module.exports = UserGamePointVideo;
+module.exports = UserCashPointVideo;
