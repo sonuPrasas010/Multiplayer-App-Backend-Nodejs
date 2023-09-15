@@ -14,6 +14,8 @@ const TeenPattiMatchPlayer = require("../model/databases/teen_patti_match_player
 const TeenPattiMatchMessages = require("../model/databases/teen_patti_match_messages");
 const TeenPattiHandRanking = require("../model/teen_patti_hand_ranking");
 const Card = require("../model/card");
+// eslint-disable-next-line no-unused-vars
+const { Model } = require("sequelize");
 
 // this is private function
 async function checkOrChangeMatchAvability(matchId, isBotActive = false) {
@@ -257,10 +259,10 @@ function generateGameNotification ({
  */
 async function checkWinner (socket, io, matchId) {
   /** @type {Array<TeenPattiHandRanking>} */
-  const handRanking = [];
+  
   
   // finding count and user user playing in provided match
-  let { rows, count } = await TeenPattiMatchPlayer.findAndCountAll({
+  const { rows, count } = await TeenPattiMatchPlayer.findAndCountAll({
     where: {
       match_id: matchId,
       is_playing: true,
@@ -279,64 +281,13 @@ async function checkWinner (socket, io, matchId) {
     ]
   });
   
-  for (let index = 0; index < rows.length; index++) {
-    const cardsJson = JSON.parse(rows[index].teen_patti_match_messages.card);
-    /** @type {Array<Card>} -This is the list of Decoded card model after querying from the database */
-    const cards = [];
-    for (const card of cardsJson) {
-      cards.push(new Card(card.rank, card.suit))
-    }
-    if (checkTrial(cards)) {
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Trail, 0);
-      handRanking.push(teenPattiHandRanking);
-    } else if (checkPureSequence(cards)) {
-      // we are not checking AQK Pure sequence here to save cpu cycle
-      // we will check that while matching color as it helps to save cpu cycle
-      if (checkAceTwoThreePureSequence(cards)) {
-        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreePureSequence, 0);
-        handRanking.push(teenPattiHandRanking);
-        continue;
-      } 
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.PureSequence, 0);
-      handRanking.push(teenPattiHandRanking);
-    } else if (checkSequence(cards)) {
-      if (checkAceTwoThreeSequence(cards)) {
-        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreeSequence, 0);
-        handRanking.push(teenPattiHandRanking);
-        continue;
-      }
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Sequence, 0);
-      handRanking.push(teenPattiHandRanking);
-    } else if (checkColor(cards)) {
-      if (checkAceQueenKingPureSequence(cards)) {
-        // checking 0, 11 ,12 pure sequence here because it is not sequence asn 123 or 456
-        // so checking here and random cards also falls down here
-        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingPureSequence, 0);
-        handRanking.push(teenPattiHandRanking);
-        continue;
-      }
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingPureSequence, 0);
-      handRanking.push(teenPattiHandRanking);
-      continue;
-    } else if (checkPair(cards)) {
+  const handRanking = getSortedHandRanking(rows);
+  if (handRanking[0].handRank === handRanking[1].handRank) {
+    checkCardUnit(handRanking[0], handRanking[1])
 
-    }
+    return MatchResult.Draw;
   }
-  
-  rows = rows.sort((a, b) => {
-    const rankA = JSON.parse(a.teen_patti_match_message.card).rank;
-    const rankB = JSON.parse(b.teen_patti_match_message.card).rank;
-  
-    if (rankA === 0) {
-      return -1; // Move rank 0 to the beginning (highest value)
-    } else if (rankB === 0) {
-      return 1; // Move rank 0 to the beginning (highest value)
-    } else {
-      // Compare ranks normally for other values
-      return rankB - rankA;
-    }
-  });
-  
+
   if (count <= 5) {
     // sort it in ascending order and highest number wins if draws then restart the game
     return await chooseWinner({ totalUser: count, matchId, io, matchPlayer: rows });
@@ -647,6 +598,77 @@ async function generateGameInfo(matchId) {
 }
 
 /**
+ * This function rakes the list of players and sorts them according to handRank. e.g., Trial, PureSequence, Sequence,....
+ * @param {Array<Model>} rows initial TeenPattiMatchPlayers without sorting
+ * @returns {Array<TeenPattiHandRanking>} the list of sorted HandRanking
+ */
+function getSortedHandRanking(rows) {
+  const handRanking = [];
+  for (let index = 0; index < rows.length; index++) {
+    // looping through each match player
+
+    const cardsJson = JSON.parse(rows[index].teen_patti_match_messages.card);
+    /** @type {Array<Card>} -This is the list of Decoded card model after querying from the database */
+    const cards = [];
+    for (const card of cardsJson) {
+      cards.push(new Card(card.rank, card.suit))
+    }
+    cards.sort((a, b) => a.rank - b.rank); // sorting cards 
+    
+    if (checkTrial(cards)) {
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Trail, 0, rows[index].user, cards);
+      handRanking.push(teenPattiHandRanking);
+    } else if (checkPureSequence(cards)) {
+      // we are not checking AQK Pure sequence here to save cpu cycle
+      // we will check that while matching color as it helps to save cpu cycle
+      if (checkAceTwoThreePureSequence(cards)) {
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreePureSequence, 0, rows[index].user, cards);
+        handRanking.push(teenPattiHandRanking);
+        continue;
+      } 
+
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.PureSequence, 0, rows[index].user, cards);
+      handRanking.push(teenPattiHandRanking);
+    } else if (checkSequence(cards)) {
+      if (checkAceTwoThreeSequence(cards)) {
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreeSequence, 0, rows[index].user, cards);
+        handRanking.push(teenPattiHandRanking);
+        continue;
+      }
+
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Sequence, 0, rows[index].user, cards);
+      handRanking.push(teenPattiHandRanking);
+    } else if (checkColor(cards)) {
+      if (checkAceQueenKingSequence(cards)) {
+        // checking 0, 11 ,12 pure sequence here because it is not sequence asn 123 or 456
+        // so checking here and random cards also falls down here
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingPureSequence, 0, rows[index].user, cards);
+        handRanking.push(teenPattiHandRanking);
+        continue;
+      }
+
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingPureSequence, 0, rows[index].user, cards);
+      handRanking.push(teenPattiHandRanking);
+    } else if (checkPair(cards)) {
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Pair, 0, rows[index].user, cards);
+      handRanking.push(teenPattiHandRanking);
+    } else {
+      if (checkAceQueenKingSequence(cards)) {
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingSequence, 0, rows[index].user, cards);
+        handRanking.push(teenPattiHandRanking);
+        continue;
+      }
+     
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingSequence, 0, rows[index].user, cards);
+      handRanking.push(teenPattiHandRanking);
+    }
+  } // loop ends here
+
+  handRanking.sort((a, b) => a.handRank - b.handRank);
+  return [...handRanking];
+}
+
+/**
  * Checks if the given card has Trial or Not. e.g., AAA, 222
  * @param {Array<Card>} hand 
  * @returns {Boolean}
@@ -687,12 +709,14 @@ function checkAceTwoThreePureSequence(cards) {
 }
 
 /**
- * check if the given sets of card has pure sequence of A23.
+ * check if the given sets of card has sequence of A23.
+ * This method doesnot have seperate methods for checking pure sequence or only sequence.
+ * Because for pure sequence it is checked under color and for sequence it is check under high card
  * Example A♥2♥3♥
  * @param {Array<Card>} cards
  * @returns {Boolean}
  */
-function checkAceQueenKingPureSequence(cards) {
+function checkAceQueenKingSequence(cards) {
   // not checking color because the sequence is checked only after checking pure sequence
   // again checking color would be repetitive
   return (
@@ -745,7 +769,38 @@ function checkColor(cards) {
   );
 }
 
+/**
+ * checks of the cards contains pairs of card
+ * @param {Array<Card>} cards 
+ * @returns {Boolean} - Returns true if cards contains pair
+ */
 function checkPair(cards) {
+  return (
+    cards[0].rank === cards[1].rank || 
+    cards[1].rank === cards[2].rank
+  );
+}
 
+/**
+ * Check the units(point) from two TeenPattiHandRanking by comparing each card.
+ * Example: HandRankA = A and HandRankB = 2 one then 1 point is added to HandRankA and this process repeats of all 3 cards
+ * @param {TeenPattiHandRanking} handRankA 
+ * @param {TeenPattiHandRanking} handRankB 
+ */
+function checkCardUnit(handRankA, handRankB) {
+  if (handRankA.cards[0].rank === Rank.Ace && handRankB.cards[0].rank !== Rank.Ace) {
+    handRankA.unit++;
+  }
+  if (handRankA.cards[0].rank !== Rank.Ace && handRankB.cards[0].rank !== Rank.Ace) {
+    handRankA.unit++;
+  }
+
+  for (let index = 2; index > 0; index--) {
+    if (handRankA.cards[index].rank > handRankB.cards[index].rank) {
+      handRankA.unit++;
+    } else if (handRankA.cards[index].rank < handRankB.cards[index].rank) {
+      handRankB.unit++;
+    }
+  }
 }
 module.exports = { startMatch, joinTeenPattiRoom, checkWinner, generateGameNotification, restartDrawGame, onJoinGame, onCardShow, generateGameInfo };
