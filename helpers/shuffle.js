@@ -57,6 +57,7 @@ const cardDeck = [
   new Card(Rank.Queen, Suit.Diamond),
   new Card(Rank.King, Suit.Diamond)
 ];
+
 function shuffleArray(array = [...cardDeck]) {
   return array.slice().sort(() => Math.random() - 0.5);
 }

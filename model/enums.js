@@ -46,8 +46,12 @@ const HandRanking = {
   Pair: 1,
   Color: 2,
   Sequence: 3,
-  PureSequence: 4,
-  Trail: 5
+  AceTwoThreeSequence: 4,
+  AceQueenKingSequence: 5,
+  PureSequence: 6,
+  AceTwoThreePureSequence: 7,
+  AceQueenKingPureSequence: 8,
+  Trail: 9
 };
 
 const MatchResult = {

@@ -5,13 +5,15 @@ const { Socket, Server } = require("socket.io");
 //   LowCardMessages
 // } = require("../model/config/relations");
 
-const { MessageType, MatchResult, GameStatus, MatchEvent } = require("../model/enums");
+const { MessageType, MatchResult, GameStatus, MatchEvent, Rank, HandRanking } = require("../model/enums");
 const User = require("../model/databases/user");
 const sequelize = require("../model/config/config");
 const { shuffleArray } = require("./shuffle");
 const TeenPattiMatch = require("../model/databases/teen_patti_match");
 const TeenPattiMatchPlayer = require("../model/databases/teen_patti_match_player");
 const TeenPattiMatchMessages = require("../model/databases/teen_patti_match_messages");
+const TeenPattiHandRanking = require("../model/teen_patti_hand_ranking");
+const Card = require("../model/card");
 
 // this is private function
 async function checkOrChangeMatchAvability(matchId, isBotActive = false) {
@@ -64,12 +66,14 @@ async function checkStatusToJoiningAvailability(matchId, isBotActive = false) {
 
 async function checkStatusToShowingAvailability(teenPattiMatchPlayerId, isBotActive = false) {
   // return true if user is applcable to join
-  // else return false 
+  // else return false
 
   const matchPlayer = await TeenPattiMatchPlayer.findOne({ 
-    where: { id: teenPattiMatchPlayerId, is_playing: false },
+    where: { id: teenPattiMatchPlayerId },
     include: { model: TeenPattiMatch, where: { gameStatus: "playing" } } 
   });
+
+  console.log(matchPlayer.toJSON());
 
   if (matchPlayer && matchPlayer.is_playing === true) {
     return true;
@@ -95,19 +99,19 @@ async function onJoinGame({ socket = new Socket(), io = new Server(), matchId, u
 
   const transaction = await sequelize.transaction();
   const match = await TeenPattiMatch.findByPk(matchId);
-  const lowCardMatchPlayer = await TeenPattiMatchPlayer.findOne({ where: { match_id: matchId, user_id: userId } });
+  const teenPattiMatchPlayer = await TeenPattiMatchPlayer.findOne({ where: { match_id: matchId, user_id: userId } });
 
   let userPp = user.getDataValue("play_point");
   userPp = userPp - 10;
   let matchPrize = match.getDataValue("prize");
   matchPrize = matchPrize + 10;
 
-  lowCardMatchPlayer.set("is_playing", true);
+  teenPattiMatchPlayer.set("is_playing", true);
   user.set("play_point", userPp);
   match.set("prize", matchPrize);
   await user.save({ transaction });
   await match.save({ transaction })
-  await lowCardMatchPlayer.save({ transaction });
+  await teenPattiMatchPlayer.save({ transaction });
   await transaction.commit();
   
   const message = generateGameNotification({
@@ -183,7 +187,7 @@ async function startMatch ({
     await shuffleAndDistributeCard({
       io,
       socket,
-      lowCardMatchId: matchId
+      teenPattiMatchId: matchId
     });
 
     await TeenPattiMatch.update({ gameStatus: "playing" }, { where: { id: matchId } })
@@ -201,7 +205,7 @@ async function startMatch ({
         messageType: MessageType.BotInfo
       });
       io.to(matchId).emit("roomMessage", message);
-      await eliminatePassiveUser({ io, socket, lowCardMatchId: matchId });
+      const passiveUsers = await eliminatePassiveUser({ io, socket, lowCardMatchId: matchId });
 
       const result = await checkWinner(socket, io, matchId);
       if (result === MatchResult.Draw) {
@@ -217,7 +221,7 @@ async function startMatch ({
 
 async function joinTeenPattiRoom (matchId = 0, userId, socketId) {
   console.log(`socket_id: ${socketId}`);
-  const teenPattiMatchPlayer = TeenPattiMatch.create({ match_id: matchId, user_id: userId, socket_id: socketId });
+  const teenPattiMatchPlayer = TeenPattiMatchPlayer.create({ match_id: matchId, user_id: userId, socket_id: socketId });
   return await teenPattiMatchPlayer;
 }
 
@@ -243,8 +247,18 @@ function generateGameNotification ({
   };
 }
 
-// start function checkWinner
-async function checkWinner (socket = new Socket(), io = new Server(), matchId) {
+/**
+ * Checking winner from the last round. this functions executes only on the last round.
+ * This functions determines wether game is draw, or winner when the user <= 5
+ * @param {Socket} socket 
+ * @param {Server} io 
+ * @param {Number} matchId TeenPattiMatchID
+ * @returns {MatchResult}
+ */
+async function checkWinner (socket, io, matchId) {
+  /** @type {Array<TeenPattiHandRanking>} */
+  const handRanking = [];
+  
   // finding count and user user playing in provided match
   let { rows, count } = await TeenPattiMatchPlayer.findAndCountAll({
     where: {
@@ -264,10 +278,54 @@ async function checkWinner (socket = new Socket(), io = new Server(), matchId) {
       }
     ]
   });
+  
+  for (let index = 0; index < rows.length; index++) {
+    const cardsJson = JSON.parse(rows[index].teen_patti_match_messages.card);
+    /** @type {Array<Card>} -This is the list of Decoded card model after querying from the database */
+    const cards = [];
+    for (const card of cardsJson) {
+      cards.push(new Card(card.rank, card.suit))
+    }
+    if (checkTrial(cards)) {
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Trail, 0);
+      handRanking.push(teenPattiHandRanking);
+    } else if (checkPureSequence(cards)) {
+      // we are not checking AQK Pure sequence here to save cpu cycle
+      // we will check that while matching color as it helps to save cpu cycle
+      if (checkAceTwoThreePureSequence(cards)) {
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreePureSequence, 0);
+        handRanking.push(teenPattiHandRanking);
+        continue;
+      } 
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.PureSequence, 0);
+      handRanking.push(teenPattiHandRanking);
+    } else if (checkSequence(cards)) {
+      if (checkAceTwoThreeSequence(cards)) {
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreeSequence, 0);
+        handRanking.push(teenPattiHandRanking);
+        continue;
+      }
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Sequence, 0);
+      handRanking.push(teenPattiHandRanking);
+    } else if (checkColor(cards)) {
+      if (checkAceQueenKingPureSequence(cards)) {
+        // checking 0, 11 ,12 pure sequence here because it is not sequence asn 123 or 456
+        // so checking here and random cards also falls down here
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingPureSequence, 0);
+        handRanking.push(teenPattiHandRanking);
+        continue;
+      }
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingPureSequence, 0);
+      handRanking.push(teenPattiHandRanking);
+      continue;
+    } else if (checkPair(cards)) {
 
+    }
+  }
+  
   rows = rows.sort((a, b) => {
-    const rankA = JSON.parse(a.low_card_match_message.card).rank;
-    const rankB = JSON.parse(b.low_card_match_message.card).rank;
+    const rankA = JSON.parse(a.teen_patti_match_message.card).rank;
+    const rankB = JSON.parse(b.teen_patti_match_message.card).rank;
   
     if (rankA === 0) {
       return -1; // Move rank 0 to the beginning (highest value)
@@ -325,8 +383,8 @@ async function chooseWinner({ totalUser, matchPlayer = [], matchId, io = new Ser
     io.to(matchId).emit("roomMessage", message);
     return;
   }
-  const firstUserRank = JSON.parse(matchPlayer[0].low_card_match_message.card).rank;
-  const secondUserRank = JSON.parse(matchPlayer[1].low_card_match_message.card).rank;
+  const firstUserRank = JSON.parse(matchPlayer[0].teen_patti_match_message.card).rank;
+  const secondUserRank = JSON.parse(matchPlayer[1].teen_patti_match_message.card).rank;
   // console.log(JSON.parse(matchPlayer[0].low_card_match_message.card));
   // console.log("first user rank"+ firstUserRank);
   // console.log("second user rank"+ secondUserRank);
@@ -360,7 +418,7 @@ async function chooseWinner({ totalUser, matchPlayer = [], matchId, io = new Ser
   const message = generateGameNotification({
     messageType: MessageType.WinnerAnnouncement,
     message: `Congratulation ${winner.getDataValue("name")} on wining ${prize} CP`,
-    card: JSON.parse(matchPlayer[0].low_card_match_message.card),
+    card: JSON.parse(matchPlayer[0].teen_patti_match_message.card),
     user: {
       name: winner.getDataValue("name"),
       id: winner.getDataValue("id")
@@ -456,6 +514,11 @@ async function restartDrawGame({ socket = new Socket(), io = new Server(), match
   }, 1500);
 }
 
+/**
+ * Removes the number of passive users who did not show their cards
+ * after a specified time period (e.g., 20 seconds) since joining the game.
+ * @returns {Promise<Number>} The number of deleted passive users.
+ */
 async function eliminatePassiveUser ({ io = new Server(), socket = new Socket(), lowCardMatchId }) {
   // passive users are those who did not show their card after the 20 sec of joining the game
   const { rows, count } = await TeenPattiMatchPlayer.findAndCountAll({ where: { match_id: lowCardMatchId, is_playing: true, shown: false }, include: User });
@@ -499,9 +562,19 @@ async function shuffleAndDistributeCard({
   const playersCards = [];
   for (let index = 0; index < joinedPlayers.length; index++) {
     const data = {};
+    const cards = [];
 
-    data.card = shuffledCard[index].toJson();
-    data.user_id = joinedPlayers[index].getDataValue("user_id");
+    for (let index = 0; index < 3; index++) {
+      const randomIndex = Math.floor(Math.random() * shuffledCard.length);
+      console.log(shuffledCard[index]);
+      console.log(index);
+      cards.push(shuffledCard[index].toJson());
+      shuffledCard.splice(randomIndex);
+    }
+    console.log(shuffledCard); 
+    // data.card = shuffledCard[index].toJson();
+    data.card = cards;
+    data.user_id = joinedPlayers[index].user_id;
     data.match_id = teenPattiMatchId;
     data.match_player_id = joinedPlayers[index].getDataValue("id");
     playersCards.push(data);
@@ -526,6 +599,7 @@ async function shuffleAndDistributeCard({
 }
 
 async function onCardShow({ socket = new Socket(), io = new Server(), userId, matchId, teenPattiMatchPlayerId }) {
+  console.log(`===> ${teenPattiMatchPlayerId} match_id=${matchId} user_id ${userId}`);
   if (!await checkStatusToShowingAvailability(teenPattiMatchPlayerId)) {
     const message = generateGameNotification({ message: "You are not in this game", messageType: MessageType.BotDanger });
     socket.emit(MatchEvent.RoomMessage, message);
@@ -546,7 +620,7 @@ async function onCardShow({ socket = new Socket(), io = new Server(), userId, ma
 
   matchPlayer.set("shown", true);
   await matchPlayer.save();
-  const message = generateGameNotification({ card: JSON.parse(matchPlayer.low_card_match_message.card), messageType: MessageType.CardShow, user: matchPlayer.user });
+  const message = generateGameNotification({ card: JSON.parse(matchPlayer.teen_patti_match_message.card), messageType: MessageType.CardShow, user: matchPlayer.user });
   io.to(matchId).emit("roomMessage", message);
 }
 
@@ -559,7 +633,7 @@ async function generateGameInfo(matchId) {
           include: [  
             [
               sequelize.literal(
-                "(Select COUNT(*) FROM low_card_match_players WHERE low_card_match_players.match_id = low_card_match.id AND is_playing = 1)"
+                "(Select COUNT(*) FROM teen_patti_match_players WHERE teen_patti_match_players.match_id = teen_patti_match.id AND is_playing = 1)"
               ),
               "playerCount"
             ]
@@ -572,4 +646,106 @@ async function generateGameInfo(matchId) {
   }
 }
 
+/**
+ * Checks if the given card has Trial or Not. e.g., AAA, 222
+ * @param {Array<Card>} hand 
+ * @returns {Boolean}
+ */
+function checkTrial(hand) {
+  return hand[0].rank === hand[1].rank && hand[1].rank === hand[2].rank;
+}
+
+/**
+ * check if the given sets of card has pure sequence or not.Example 5♥6♥7♥.
+ * Note:- This does not include A23 and AQK 
+ * @param {Array<Card>} cards
+ * @returns {Boolean}
+ */
+function checkPureSequence(cards) {
+  return (
+    cards[0].suits === cards[1].suits &&
+    cards[1].suits === cards[2].suits &&
+    cards[0].rank + 1 === cards[1].rank &&
+    cards[1].rank + 1 === cards[2].rank
+  );
+}
+
+/**
+ * check if the given sets of card has pure sequence of A23.
+ * Example A♥2♥3♥
+ * @param {Array<Card>} cards
+ * @returns {Boolean}
+ */
+function checkAceTwoThreePureSequence(cards) {
+  // not checking color because the sequence is checked only after checking pure sequence
+  // again checking color would be repetitive
+  return (
+    cards[0].rank === Rank.Ace &&
+    cards[1].rank === Rank.Two &&
+    cards[2].rank === Rank.Three
+  );
+}
+
+/**
+ * check if the given sets of card has pure sequence of A23.
+ * Example A♥2♥3♥
+ * @param {Array<Card>} cards
+ * @returns {Boolean}
+ */
+function checkAceQueenKingPureSequence(cards) {
+  // not checking color because the sequence is checked only after checking pure sequence
+  // again checking color would be repetitive
+  return (
+    cards[0].rank === Rank.Ace &&
+    cards[1].rank === Rank.Queen &&
+    cards[2].rank === Rank.King
+  );
+}
+
+/**
+ * check if the given sets of card has sequence of Rank. Examlple:- 3♥4♣5♦
+ * Note:- This does not include AQK and 123
+ * @param {Array<Card>} cards
+ * @returns {Boolean}
+ */
+function checkSequence(cards) {
+  // not checking color because the sequence is checked only after checking pure sequence
+  // again checking color would be repetitive
+  return (
+    cards[0].rank.index + 1 === cards[1].rank.index &&
+    cards[1].rank.index + 1 === cards[2].rank.index
+  );
+}
+
+/**
+ * Check if the given sets of card has sequence of A23
+ * @param {Array<Card>} cards
+ * @returns {Boolean}
+ */
+function checkAceTwoThreeSequence(cards) {
+  // not checking color because the sequence is checked only after checking pure sequence
+  // again checking color would be repetitive
+  return (
+    cards[0].rank === Rank.Ace && 
+    cards[1].rank === Rank.Two && 
+    cards[2].rank === Rank.Three
+  );
+}
+
+/**
+ * Check if colors the colors of all cards are same which are of random numbers.
+ * AQK should also be checked here because their numbers are Random '0', '11', '12'
+ * @param {Array<Card>} cards 
+ * @returns {Boolean} returns true if all the cards has same color
+ */
+function checkColor(cards) {
+  return (
+    cards[0].suit === cards[1].suit &&
+    cards[1].suit === cards[2].suit
+  );
+}
+
+function checkPair(cards) {
+
+}
 module.exports = { startMatch, joinTeenPattiRoom, checkWinner, generateGameNotification, restartDrawGame, onJoinGame, onCardShow, generateGameInfo };
