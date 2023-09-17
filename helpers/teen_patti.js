@@ -5,7 +5,7 @@ const { Socket, Server } = require("socket.io");
 //   LowCardMessages
 // } = require("../model/config/relations");
 
-const { MessageType, MatchResult, GameStatus, MatchEvent, Rank, HandRanking } = require("../model/enums");
+const { MessageType, MatchResult, GameStatus, MatchEvent, Rank, HandRanking, SentBy } = require("../model/enums");
 const User = require("../model/databases/user");
 const sequelize = require("../model/config/config");
 const { shuffleArray } = require("./shuffle");
@@ -16,6 +16,7 @@ const TeenPattiHandRanking = require("../model/teen_patti_hand_ranking");
 const Card = require("../model/card");
 // eslint-disable-next-line no-unused-vars
 const { Model } = require("sequelize");
+const CountryReward = require("../model/databases/country_reward");
 
 // this is private function
 async function checkOrChangeMatchAvability(matchId, isBotActive = false) {
@@ -71,11 +72,9 @@ async function checkStatusToShowingAvailability(teenPattiMatchPlayerId, isBotAct
   // else return false
 
   const matchPlayer = await TeenPattiMatchPlayer.findOne({ 
-    where: { id: teenPattiMatchPlayerId },
+    where: { id: teenPattiMatchPlayerId, is_playing: true, shown: false },
     include: { model: TeenPattiMatch, where: { gameStatus: "playing" } } 
   });
-
-  console.log(matchPlayer.toJSON());
 
   if (matchPlayer && matchPlayer.is_playing === true) {
     return true;
@@ -125,6 +124,10 @@ async function onJoinGame({ socket = new Socket(), io = new Server(), matchId, u
   io.to(matchId).emit("amIActive", true)
 }
 
+/**
+ * This function is called when the first emits start match event.
+ * If second person also calls same function his request will be ignored
+ */
 async function startMatch ({
   socket = new Socket(),
   io = new Server(),
@@ -139,9 +142,6 @@ async function startMatch ({
   const message = generateGameNotification({ message: "game has started" });
   io.to(matchId).emit("roomMessage", message);
 
-  console.log("update low card match status to join");
-  // const count = await LowCardMatch.update({ gameStatus: "joining" }, { where: { id: matchId } });
-  // console.log(count[0]);
   const match = await TeenPattiMatch.findByPk(matchId);
   match.setDataValue("gameStatus", "joining");
   await match.save();
@@ -162,10 +162,8 @@ async function startMatch ({
     if (count < 2) {
       // if there is no more than 1 player joined game cancel the game
       for (const matchPlayer of rows) {
-        console.log("hello match player");
         let playerPoint = matchPlayer.user.play_point;
         playerPoint += 10;
-        console.log(playerPoint);
         await User.update({ play_point: playerPoint }, { where: { id: matchPlayer.user.id } });
         matchPlayer.set("is_playing", false);
         await matchPlayer.save();
@@ -199,7 +197,7 @@ async function startMatch ({
         
     setTimeout(async() => {
       // checkWinner after the 15 second of playing time that is given to user.
-      // in this time they can thow their card or eliminated. but this feature is not implemented yet
+      // in this time they can show their card or gets eliminated. 
       await TeenPattiMatch.update({ gameStatus: "waiting" }, { where: { id: matchId } })
       io.to(matchId).emit("gameStatus", "waiting");
       const message = generateGameNotification({
@@ -208,14 +206,48 @@ async function startMatch ({
       });
       io.to(matchId).emit("roomMessage", message);
       const passiveUsers = await eliminatePassiveUser({ io, socket, lowCardMatchId: matchId });
+       
+      // finding count and user user playing in provided match
+      const { rows, count: totalUser } = await TeenPattiMatchPlayer.findAndCountAll({
+        where: {
+          match_id: matchId,
+          is_playing: true,
+          shown: true
+        },
+        include: [
+          {
+            model: TeenPattiMatch 
+          },
+          {
+            model: TeenPattiMatchMessages 
+          },
+          {
+            model: User 
+          }
+        ]
+      });
 
-      const result = await checkWinner(socket, io, matchId);
-      if (result === MatchResult.Draw) {
-        await restartDrawGame({ socket, io, matchId });
+      if (totalUser === 0) {
+        // if Nobody shows their card then end this game
+        await TeenPattiMatch.update({ prize: 0, gameStatus: GameStatus.Ideal }, { where: { id: matchId } });
+        io.to(matchId).emit("amIActive", false);
+        io.to(matchId).emit("gameStatus", GameStatus.Ideal.toLowerCase());
+        const message = generateGameNotification({ message: "Nobody won this round", messageType: MessageType.BotDanger });
+        io.to(matchId).emit("roomMessage", message);
+        io.to(matchId).emit(MatchEvent.GameInfo, await generateGameInfo())
         return;
       }
-      if (result === MatchResult.NextRound) {
-        // 
+
+      if (totalUser <= 5) {
+        // if this is a last round
+        const result = await checkWinner(socket, io, matchId, rows);
+        // now to to 
+        if (result === null) {
+          await restartDrawGame({ socket, io, matchId });
+          return;
+        }
+        await announceWinner({ socket, io, handRank: result }, matchId)
+        io.to(matchId).emit(MatchEvent.GameInfo, await generateGameInfo(matchId))
       }
     }, 15000);
   }, 15000);
@@ -255,51 +287,29 @@ function generateGameNotification ({
  * @param {Socket} socket 
  * @param {Server} io 
  * @param {Number} matchId TeenPattiMatchID
- * @returns {MatchResult}
+ * @param {Array<Model>} rows 
+ * @returns {Promise<TeenPattiHandRanking?>} Returns the MatchResult. Null if Draw
  */
-async function checkWinner (socket, io, matchId) {
-  /** @type {Array<TeenPattiHandRanking>} */
-  
-  
-  // finding count and user user playing in provided match
-  const { rows, count } = await TeenPattiMatchPlayer.findAndCountAll({
-    where: {
-      match_id: matchId,
-      is_playing: true,
-      shown: true
-    },
-    include: [
-      {
-        model: TeenPattiMatch // Include the LowCardMatch association
-      },
-      {
-        model: TeenPattiMatchMessages // Include the LowCardMessages association
-      },
-      {
-        model: User // Include the LowCardMessages association
-      }
-    ]
-  });
-  
+async function checkWinner (socket, io, matchId, rows) {  
+  /** @type {Array<TeenPattiHandRanking>} Lists of sorted HandRank */
   const handRanking = getSortedHandRanking(rows);
-  if (handRanking[0].handRank === handRanking[1].handRank) {
-    checkCardUnit(handRanking[0], handRanking[1])
-
-    return MatchResult.Draw;
+  console.log(handRanking);
+  for (const iterator of handRanking) {
+    console.log(iterator.cards)
   }
+  const highestHandRank = Math.max(...handRanking.map(item => item.handRank)); // finding the highest hand rank
 
-  if (count <= 5) {
-    // sort it in ascending order and highest number wins if draws then restart the game
-    return await chooseWinner({ totalUser: count, matchId, io, matchPlayer: rows });
-  }
-  const reminder = count % 5;
+  /** 
+   * @type {Array<TeenPattiHandRanking>}
+   *  Lists of filtered elements with the highest handRank
+   */
+  const highestRankingElements = handRanking.filter(item => item.handRank === highestHandRank);
 
-  if (reminder === 0) {
-    // if reminder is zero then eliminate 5 user
-    return await eliminateUser({ user: rows });
+  if (highestRankingElements.length === 1) {
+    return (highestRankingElements[0]);
   }
-  // if reminder is not zero then eliminate reminder's count of user
-  return await eliminateUser({ numberOfUser: reminder, users: rows });
+  const winner = checkCardUnit(highestRankingElements);
+  return winner;
 }
 
 // this is private function
@@ -380,6 +390,25 @@ async function chooseWinner({ totalUser, matchPlayer = [], matchId, io = new Ser
   return MatchResult.Finished;
 }
 
+/**
+ * Forwards message emitted by user to all the users who has joined the game.
+ * This is not a private message
+ * @param {Socket} socket 
+ * @param {Server} io 
+ * @param {number} matchId
+ * @param {String} message 
+ * @param {number} userId 
+ */
+async function forwardMessage (socket, io, message, matchId, userId) {
+  const user = await User.findByPk(userId);
+  const generatedMessage = generateGameNotification({ message, messageType: MessageType.UserMessage, sentBy: SentBy.User, user });
+  console.log(generatedMessage)
+  console.log(matchId)
+  console.log(MatchEvent.RoomMessage);
+  io.to(matchId).emit(MatchEvent.RoomMessage, generatedMessage);
+  socket.to(matchId).emit(MatchEvent.RoomMessage, generatedMessage);
+}
+
 // this is the private function 
 async function eliminateUser({ numberOfUser = 5, users = [], io = new Server() }) {
   for (let index = 0; index < numberOfUser; index++) {
@@ -407,46 +436,15 @@ async function restartDrawGame({ socket = new Socket(), io = new Server(), match
   const message = generateGameNotification({
     message: "Please wait! Shuffling card"
   });
-
   io.to(matchId).emit("roomMessage", message);
-  const cards = shuffleArray();
 
   await TeenPattiMatchMessages.destroy({
     where: {
       match_id: matchId
     }
   })
-  const drawedPlayers = await TeenPattiMatchPlayer.findAll({
-    where: {
-      match_id: matchId,
-      isPlaying: true
-    },
-    include: User
-  }
-  );
-  
-  const playerCards = [];
-  for (const key in drawedPlayers) {
-    const data = {};
-    data.card = cards[key];
-    data.user_id = drawedPlayers[key].getDataValue("user_id");
-    data.match_id = drawedPlayers[key].getDataValue("match_id"); 
-    data.match_player_id = drawedPlayers[key].getDataValue("id");
-    playerCards.push(data);
-
-    const message = generateGameNotification({
-      card: data.card,
-      messageType: MessageType.CardShow,
-      user: {
-        name: drawedPlayers[key].user.name,
-        id: drawedPlayers[key].user.id
-      }
-    });
-    io.to(drawedPlayers[key].getDataValue("socket_id")).emit("roomMessage", message)
-  }
-
-  await TeenPattiMatchMessages.bulkCreate(playerCards);
  
+  await shuffleAndDistributeCard({ io, socket, teenPattiMatchId: matchId });
   await TeenPattiMatch.update({ gameStatus: "playing" },
     {
       where: {
@@ -458,10 +456,31 @@ async function restartDrawGame({ socket = new Socket(), io = new Server(), match
   io.to(matchId).emit("gameStatus", "playing")
 
   setTimeout(async() => {
-    const matchResult = await checkWinner(socket, io, matchId);
-    if (matchResult === MatchResult.Draw) {
-      restartDrawGame(socket, io, matchId);
+    await eliminatePassiveUser({ io, socket, matchId })
+    const rows = await TeenPattiMatchPlayer.findAll({
+      where: {
+        match_id: matchId,
+        is_playing: true,
+        shown: true
+      },
+      include: [
+        {
+          model: TeenPattiMatch // Include the LowCardMatch association
+        },
+        {
+          model: TeenPattiMatchMessages // Include the LowCardMessages association
+        },
+        {
+          model: User // Include the LowCardMessages association
+        }
+      ]
+    });
+    const matchResult = await checkWinner(socket, io, matchId, rows);
+    if (matchResult === null) {
+      restartDrawGame({ socket, io, matchId });
+      return;
     }
+    announceWinner({ socket, io, handRank: matchResult }, matchId);
   }, 1500);
 }
 
@@ -488,11 +507,17 @@ async function eliminatePassiveUser ({ io = new Server(), socket = new Socket(),
   return count;
 }
 
-async function shuffleAndDistributeCard({
-  io = new Server(),
-  socket = new Socket(),
-  teenPattiMatchId
-}) {
+/**
+ * Shuffles from the deck of 52 cards and distribute 3 cards to each player.
+ * @param {Object} options - An object containing configuration options.
+ * @param {Server} options.io - A parameter representing a Socket.IO server instance.
+ * @param {Socket} options.socket - A parameter representing a Socket.IO socket instance.
+ * @param {number} options.teenPattiMatchId - The Teen Patti match ID as an integer.
+ * @returns {Promise<void>} This function does not returns anything all the tasks are performed inside
+ */
+async function shuffleAndDistributeCard(options) {
+  const { io, socket, teenPattiMatchId } = options;
+
   let message = generateGameNotification({
     message: "Shuffling cards",
     messageType: MessageType.BotSuccess
@@ -511,19 +536,21 @@ async function shuffleAndDistributeCard({
   });
 
   const playersCards = [];
+  console.log(shuffledCard);
   for (let index = 0; index < joinedPlayers.length; index++) {
     const data = {};
     const cards = [];
 
     for (let index = 0; index < 3; index++) {
+      // Select 3 random card to each player from the deck of 52 shuffledCard
+      // after selecting each card remove the selected card from shuffledCard using randomIndex
       const randomIndex = Math.floor(Math.random() * shuffledCard.length);
-      console.log(shuffledCard[index]);
-      console.log(index);
-      cards.push(shuffledCard[index].toJson());
-      shuffledCard.splice(randomIndex);
+      console.log(shuffledCard[randomIndex]);
+      console.log(randomIndex);
+      cards.push(shuffledCard[randomIndex].toJson());
+      shuffledCard.splice(randomIndex, 1);
     }
     console.log(shuffledCard); 
-    // data.card = shuffledCard[index].toJson();
     data.card = cards;
     data.user_id = joinedPlayers[index].user_id;
     data.match_id = teenPattiMatchId;
@@ -561,8 +588,6 @@ async function onCardShow({ socket = new Socket(), io = new Server(), userId, ma
     include: [{ model: TeenPattiMatchMessages }, { model: User }] 
   });
 
-  console.log(matchPlayer.toJSON());
-
   if (matchPlayer == null) {
     const message = generateGameNotification({ messageType: MessageType.BotDanger, message: "You are not in this game" });
     socket.emit(message);
@@ -575,6 +600,13 @@ async function onCardShow({ socket = new Socket(), io = new Server(), userId, ma
   io.to(matchId).emit("roomMessage", message);
 }
 
+/**
+ * Generates game information for the provided matchId. This includes the count of users who have joined the game, their cards, and user information.
+ * The client-side is responsible for displaying a user's card. If a user has shown their card, it should be visible; otherwise, the backside of the card should be shown.
+ * 
+ * @param {number} matchId - The ID of the match for which game information is generated.
+ * @returns {Promise} - A promise that resolves to the game information.
+ */
 async function generateGameInfo(matchId) { 
   try {
     return await TeenPattiMatch.findOne(
@@ -598,68 +630,98 @@ async function generateGameInfo(matchId) {
 }
 
 /**
+ * This functions announces the winner of the game. And rewards him on game won
+ * @param {Object} options 
+ * @param {Socket} options.socket
+ * @param {Server} options.io
+ * @param {TeenPattiHandRanking} options.handRank of the winner player
+ * @param {number} matchId TeenPattiMatchID
+ */
+async function announceWinner(options, matchId) {
+  const { socket, io, handRank } = options;
+
+  const teenPattiMatch = await TeenPattiMatch.findByPk(matchId);
+  const userCp = handRank.user.cash_point + teenPattiMatch.prize;
+  await User.update({ cash_point: userCp }, { where: { id: handRank.user.id } });
+  teenPattiMatch.set("prize", 0);
+  teenPattiMatch.set("gameStatus", GameStatus.Ideal);
+  await teenPattiMatch.save();
+  await TeenPattiMatchPlayer.update({ is_playing: false, shown: false }, { where: { match_id: matchId } });
+  await TeenPattiMatchMessages.destroy({ where: { match_id: matchId } });
+
+  const message = generateGameNotification({ message: "won this round", messageType: MessageType.WinnerAnnouncement, card: handRank.cards, user: handRank.user, job: "append" });
+  io.to(matchId).emit(MatchEvent.RoomMessage, message);
+  io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Ideal.toLowerCase());
+  io.to(matchId).emit(MatchEvent.AmIActive, false);
+}
+
+/**
  * This function rakes the list of players and sorts them according to handRank. e.g., Trial, PureSequence, Sequence,....
  * @param {Array<Model>} rows initial TeenPattiMatchPlayers without sorting
  * @returns {Array<TeenPattiHandRanking>} the list of sorted HandRanking
  */
 function getSortedHandRanking(rows) {
+  console.log(rows.length);
   const handRanking = [];
   for (let index = 0; index < rows.length; index++) {
     // looping through each match player
+    const cardsJson = JSON.parse(rows[index].teen_patti_match_message.card);
 
-    const cardsJson = JSON.parse(rows[index].teen_patti_match_messages.card);
     /** @type {Array<Card>} -This is the list of Decoded card model after querying from the database */
     const cards = [];
+
+    /** Current user of the loop */
+    const user = rows[index].user.toJSON()
+
     for (const card of cardsJson) {
-      cards.push(new Card(card.rank, card.suit))
+      cards.push(new Card(card.rank, card.suits))
     }
-    cards.sort((a, b) => a.rank - b.rank); // sorting cards 
+    cards.sort((a, b) => a.rank - b.rank); // sorting cards
     
     if (checkTrial(cards)) {
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Trail, 0, rows[index].user, cards);
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Trail, 0, user, cards);
       handRanking.push(teenPattiHandRanking);
     } else if (checkPureSequence(cards)) {
       // we are not checking AQK Pure sequence here to save cpu cycle
       // we will check that while matching color as it helps to save cpu cycle
       if (checkAceTwoThreePureSequence(cards)) {
-        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreePureSequence, 0, rows[index].user, cards);
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreePureSequence, 0, user, cards);
         handRanking.push(teenPattiHandRanking);
         continue;
       } 
 
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.PureSequence, 0, rows[index].user, cards);
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.PureSequence, 0, user, cards);
       handRanking.push(teenPattiHandRanking);
     } else if (checkSequence(cards)) {
       if (checkAceTwoThreeSequence(cards)) {
-        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreeSequence, 0, rows[index].user, cards);
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceTwoThreeSequence, 0, user, cards);
         handRanking.push(teenPattiHandRanking);
         continue;
       }
 
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Sequence, 0, rows[index].user, cards);
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Sequence, 0, user, cards);
       handRanking.push(teenPattiHandRanking);
     } else if (checkColor(cards)) {
       if (checkAceQueenKingSequence(cards)) {
-        // checking 0, 11 ,12 pure sequence here because it is not sequence asn 123 or 456
+        // checking 0, 11 ,12 pure sequence here because it is not sequence as 123 or 456
         // so checking here and random cards also falls down here
-        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingPureSequence, 0, rows[index].user, cards);
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingPureSequence, 0, user, cards);
         handRanking.push(teenPattiHandRanking);
         continue;
       }
-
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingPureSequence, 0, rows[index].user, cards);
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Color, 0, user, cards);
       handRanking.push(teenPattiHandRanking);
     } else if (checkPair(cards)) {
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Pair, 0, rows[index].user, cards);
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.Pair, 0, user, cards);
       handRanking.push(teenPattiHandRanking);
     } else {
       if (checkAceQueenKingSequence(cards)) {
-        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingSequence, 0, rows[index].user, cards);
+        const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingSequence, 0, user, cards);
         handRanking.push(teenPattiHandRanking);
         continue;
       }
      
-      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.AceQueenKingSequence, 0, rows[index].user, cards);
+      const teenPattiHandRanking = new TeenPattiHandRanking(HandRanking.HighCard, 0, user, cards);
       handRanking.push(teenPattiHandRanking);
     }
   } // loop ends here
@@ -764,8 +826,8 @@ function checkAceTwoThreeSequence(cards) {
  */
 function checkColor(cards) {
   return (
-    cards[0].suit === cards[1].suit &&
-    cards[1].suit === cards[2].suit
+    cards[0].suits === cards[1].suits &&
+    cards[1].suits === cards[2].suits
   );
 }
 
@@ -782,25 +844,56 @@ function checkPair(cards) {
 }
 
 /**
- * Check the units(point) from two TeenPattiHandRanking by comparing each card.
+ * Check the units(point) from TeenPattiHandRanking by comparing each card.
  * Example: HandRankA = A and HandRankB = 2 one then 1 point is added to HandRankA and this process repeats of all 3 cards
- * @param {TeenPattiHandRanking} handRankA 
- * @param {TeenPattiHandRanking} handRankB 
+ * @param {Array<TeenPattiHandRanking>} handRanks 
+ * @returns { TeenPattiHandRanking | null } Returns null, if game drawed and if there is clear winner, returns winner TeenPattiHandRanking
  */
-function checkCardUnit(handRankA, handRankB) {
-  if (handRankA.cards[0].rank === Rank.Ace && handRankB.cards[0].rank !== Rank.Ace) {
-    handRankA.unit++;
-  }
-  if (handRankA.cards[0].rank !== Rank.Ace && handRankB.cards[0].rank !== Rank.Ace) {
-    handRankA.unit++;
-  }
+function checkCardUnit(handRanks) {
+  /** @type {String | null} The result of the map wether it is draw or finished. Null if we have winner or 'draw' if we have no winner  */
+  let matchResult = null;
 
-  for (let index = 2; index > 0; index--) {
-    if (handRankA.cards[index].rank > handRankB.cards[index].rank) {
-      handRankA.unit++;
-    } else if (handRankA.cards[index].rank < handRankB.cards[index].rank) {
-      handRankB.unit++;
+  /** @type {TeenPattiHandRanking} */
+  let temporaryHandRank = handRanks[0];
+
+  for (let index = 1; index < handRanks.length; index++) { 
+    temporaryHandRank.unit = 0;
+    if (temporaryHandRank.cards[0].rank === Rank.Ace && handRanks[index].cards[0].rank !== Rank.Ace) {
+      // if temporary card has ace and other does not, add 1  unit to temporaryHandRank
+      temporaryHandRank.unit++;
+    } else if (temporaryHandRank.cards[0].rank !== Rank.Ace && handRanks[index].cards[0].rank !== Rank.Ace) {
+      // if current card has ace and temporary does not, add 1  unit to current card
+      handRanks[index].unit++;
     }
+    if (temporaryHandRank.unit === handRanks[index].unit) {
+      // starting loop from the end of card
+      for (let cardIndex = 2; cardIndex >= 0; cardIndex--) {
+        if (temporaryHandRank.cards[cardIndex].rank > handRanks[index].cards[cardIndex].rank) {
+          // if temporary card is larger then add a unit to temporary card
+          temporaryHandRank.unit++;
+          break;
+        } else if (temporaryHandRank.cards[handRanks].rank < handRanks[index].cards[cardIndex].rank) {
+          // if current card is higher add a unit to current card
+          handRanks[index].unit++;
+          break;
+        }
+      }// end of card loop
+    }
+    if (temporaryHandRank.unit < handRanks[index].unit) {
+      // if temporaryHandRank.unit is less then current handRank.unit then we have new winner.
+      // Now override temporaryHandRank with new winner.
+      // also we need to override the matchResult with null because if in previous loop if we had draw then we have to override it.
+      // And if temporaryHandRank is greater than current handRank than nothing changes and 
+      temporaryHandRank = handRanks[index];
+      matchResult = null;
+    } else if (temporaryHandRank.unit === handRanks[index].unit) {
+      // if temporaryHandRank.unit is equals to handRanks.unit then its a draw
+      matchResult = MatchResult.Draw;
+    }
+  } // End of Player HandRanking loop
+  if (matchResult === MatchResult.Draw) {
+    return null;
   }
+  return temporaryHandRank;
 }
-module.exports = { startMatch, joinTeenPattiRoom, checkWinner, generateGameNotification, restartDrawGame, onJoinGame, onCardShow, generateGameInfo };
+module.exports = { startMatch, joinTeenPattiRoom, checkWinner, generateGameNotification, restartDrawGame, onJoinGame, onCardShow, generateGameInfo, forwardMessage };

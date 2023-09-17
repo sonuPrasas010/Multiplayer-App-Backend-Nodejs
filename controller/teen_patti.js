@@ -1,6 +1,5 @@
-const LowCardMatch = require("../model/databases/low_card_match");
 const sequelize = require("../model/config/config");
-const { joinTeenPattiRoom, startMatch, onJoinGame, onCardShow, generateGameInfo } = require("../helpers/teen_patti");
+const { joinTeenPattiRoom, startMatch, onJoinGame, onCardShow, generateGameInfo, forwardMessage } = require("../helpers/teen_patti");
 const { Server } = require("socket.io");
 const User = require("../model/databases/user");
 const { MessageType, MatchEvent } = require("../model/enums");
@@ -13,7 +12,11 @@ const TeenPattiMatchPlayer = require("../model/databases/teen_patti_match_player
 const teenPattiGameSocket = (io = new Server()) => {
   io.on("connect", async (socket) => {
     const userId = socket.handshake.query.user_id;
+
+    /** @type {number | null } Id of currently playing match */
     let teenPattiMatchId = null;
+
+    /** @type {number|null} Current user Id */
     let teenPattiMatchPlayerId = null;
     // console.log(userId);
     try {
@@ -22,7 +25,6 @@ const teenPattiGameSocket = (io = new Server()) => {
       teenPattiMatchId = teenPattiMatch.getDataValue("id");
       teenPattiMatchPlayerId = teenPattiMatchPlayer.getDataValue("id");
       await socket.join(teenPattiMatchId);
-
       socket.emit("action", {
         navigateTo: "game",
         match: teenPattiMatchPlayer
@@ -55,6 +57,11 @@ const teenPattiGameSocket = (io = new Server()) => {
       await onCardShow({ socket, io, userId, matchId: teenPattiMatchId, teenPattiMatchPlayerId });
       io.to(teenPattiMatchId).emit(MatchEvent.GameInfo, await generateGameInfo(teenPattiMatchId));
     });
+     
+    socket.on(MatchEvent.ClientMessage, (message) => {
+      console.log(message);
+      forwardMessage(socket, io, message, userId, teenPattiMatchId);
+    })
     // on socket disconnected
     socket.on("disconnect", async () => {
       try {
@@ -123,18 +130,18 @@ async function jonRoom(userId, socketId) {
   return data;
 }
 
-async function leaveRoom(lowCardMatchPlayer) {
+async function leaveRoom(teenPattiMatchPlayer) {
   // delete player match
-  await lowCardMatchPlayer.destroy();
+  await teenPattiMatchPlayer.destroy();
 
-  const lowCardMatch = await LowCardMatch.findByPk(
-    lowCardMatchPlayer.getDataValue("match_id"),
+  const teenPattiMatch = await TeenPattiMatch.findByPk(
+    teenPattiMatchPlayer.getDataValue("match_id"),
     {
       attributes: {
         include: [
           [
             sequelize.literal(
-              "(Select COUNT(*) FROM low_card_match_players WHERE low_card_match_players.match_id = low_card_match.id)"
+              "(Select COUNT(*) FROM teen_patti_match_players WHERE teen_patti_match_players.match_id = teen_patti_match.id)"
             ),
             "playerCount"
           ]
@@ -143,10 +150,11 @@ async function leaveRoom(lowCardMatchPlayer) {
     }
   );
   // if low card makeMatch has 0 player then formatting its attributes
-  if (lowCardMatch.getDataValue("playerCount") > 0) return;
-  lowCardMatch.set("isBotActive", false);
-  lowCardMatch.set("gameStatus", "ideal");
-  await lowCardMatch.save();
+  console.log(teenPattiMatch.toJSON());
+  if (teenPattiMatch.getDataValue("playerCount") > 0) return;
+  teenPattiMatch.set("isBotActive", false);
+  teenPattiMatch.set("gameStatus", "ideal");
+  await teenPattiMatch.save();
 }
 
 function generateGameNotification({
