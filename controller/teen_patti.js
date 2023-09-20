@@ -5,6 +5,7 @@ const User = require("../model/databases/user");
 const { MessageType, MatchEvent } = require("../model/enums");
 const TeenPattiMatch = require("../model/databases/teen_patti_match");
 const TeenPattiMatchPlayer = require("../model/databases/teen_patti_match_player");
+const { Model } = require("sequelize");
 
 // room message are those events that are sent on behalf of room like joining room
 // action me
@@ -22,7 +23,7 @@ const teenPattiGameSocket = (io = new Server()) => {
     try {
     // join room and get joined room, and match player id
       const [teenPattiMatch, teenPattiMatchPlayer] = await jonRoom(userId, socket.id);
-      teenPattiMatchId = teenPattiMatch.getDataValue("id");
+      teenPattiMatchId = teenPattiMatch.id;
       teenPattiMatchPlayerId = teenPattiMatchPlayer.getDataValue("id");
       await socket.join(teenPattiMatchId);
       socket.emit("action", {
@@ -31,7 +32,7 @@ const teenPattiGameSocket = (io = new Server()) => {
       });
       const user = await User.findByPk(userId);
       const message = generateGameNotification({ message: "joined the room", user, job: "append" });
-      io.to(teenPattiMatch.getDataValue("id")).emit("roomMessage", message);
+      io.to(teenPattiMatchId).emit(MatchEvent.RoomMessage, message);
       socket.emit("amIActive", false);// when the user joins for the first time he is always act
       socket.emit("gameStatus", teenPattiMatch.getDataValue("gameStatus"));
       io.to(teenPattiMatchId).emit(MatchEvent.GameInfo, await generateGameInfo(teenPattiMatchId));
@@ -63,12 +64,15 @@ const teenPattiGameSocket = (io = new Server()) => {
       forwardMessage(socket, io, message, userId, teenPattiMatchId);
     })
     // on socket disconnected
+
     socket.on("disconnect", async () => {
       try {
         console.log("disconnected");
-        const user = User.findByPk(userId);
-        const teenPattiMatchPlayer = await TeenPattiMatchPlayer.findByPk(teenPattiMatchPlayerId);
-        const teenPattiMatch = await TeenPattiMatch.findByPk(teenPattiMatchId);
+        const [user, teenPattiMatchPlayer, teenPattiMatch] = await Promise.all([
+          User.findByPk(userId),
+          TeenPattiMatchPlayer.findByPk(teenPattiMatchPlayerId),
+          TeenPattiMatch.findByPk(teenPattiMatchId)
+        ]);
 
         console.log(teenPattiMatch);
         await leaveRoom(teenPattiMatchPlayer, teenPattiMatch.id);
@@ -93,7 +97,28 @@ module.exports = {
   teenPattiGameSocket
 };
 
+/**
+ * This function allows a user to join a Teen Patti room.
+ *
+ * @param {number} userId - The unique identifier of the user.
+ * @param {string} socketId - The unique identifier of the socket connection.
+ *
+ * @returns {Promise<Array<Model>>} An array containing two elements. The first element is the TeenPattiMatch object, 
+ *                  and the second element is the TeenPattiMatchPlayer object.
+ *
+ * The function works as follows:
+ * 1. It first tries to find a Teen Patti match where the player count is less than or equal to 20.
+ * 2. If such a match is found, it allows the user to join this room by calling the `joinTeenPattiRoom` function.
+ * 3. If no such match is found, it creates a new Teen Patti match and allows the user to join this new room.
+ *
+ * Note: The `joinTeenPattiRoom` function should be defined elsewhere in your code and should handle 
+ *       the logic of adding a user to a Teen Patti room.
+ */
 async function jonRoom(userId, socketId) {
+  /** 
+   * @type {Array<Model>}
+   * This holds the data of Teen Patti Match and Teen Patti Match Player. This will be returned after the completion of function.
+   */
   let data = [];
   // find match where user count is less than 21
   let teenPattiMatch = await TeenPattiMatch.findOne({
@@ -109,10 +134,9 @@ async function jonRoom(userId, socketId) {
     },
     having: sequelize.literal("playerCount <= 20")
   });
-  console.log(`Join room socketid: ${socketId}`);
   if (teenPattiMatch) {
     const teenPattiMatchPlayer = await joinTeenPattiRoom(
-      teenPattiMatch.getDataValue("id"),
+      teenPattiMatch.id,
       userId, 
       socketId
     );
@@ -129,7 +153,11 @@ async function jonRoom(userId, socketId) {
 
   return data;
 }
-
+/**
+ * 
+ * @param {Model} teenPattiMatchPlayer 
+ * @returns 
+ */
 async function leaveRoom(teenPattiMatchPlayer) {
   // delete player match
   await teenPattiMatchPlayer.destroy();
@@ -150,10 +178,10 @@ async function leaveRoom(teenPattiMatchPlayer) {
     }
   );
   // if low card makeMatch has 0 player then formatting its attributes
-  console.log(teenPattiMatch.toJSON());
   if (teenPattiMatch.getDataValue("playerCount") > 0) return;
   teenPattiMatch.set("isBotActive", false);
   teenPattiMatch.set("gameStatus", "ideal");
+  teenPattiMatch.set("prize", 0)
   await teenPattiMatch.save();
 }
 

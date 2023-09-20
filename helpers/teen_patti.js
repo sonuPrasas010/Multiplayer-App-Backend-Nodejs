@@ -127,12 +127,13 @@ async function onJoinGame({ socket = new Socket(), io = new Server(), matchId, u
 /**
  * This function is called when the first emits start match event.
  * If second person also calls same function his request will be ignored
+ * @param {Object} options Configurations to start match
+ * @param {Socket} options.socket Socket connection of currently connected user
+ * @param {Server} options.io Server connections of currently connected user
+ * @param {Number} options.matchId Id of currently playing game
  */
-async function startMatch ({
-  socket = new Socket(),
-  io = new Server(),
-  matchId
-}) { 
+async function startMatch (options) { 
+  const { socket, io, matchId } = options;
   if (!(await checkOrChangeMatchAvability(matchId))) {
     return;
   }
@@ -205,10 +206,15 @@ async function startMatch ({
         messageType: MessageType.BotInfo
       });
       io.to(matchId).emit("roomMessage", message);
+
+      /**
+       * Passive users are those who did not show card within 15 second after receiving the cards
+       * @type {number}
+       */
       const passiveUsers = await eliminatePassiveUser({ io, socket, lowCardMatchId: matchId });
        
       // finding count and user user playing in provided match
-      const { rows, count: totalUser } = await TeenPattiMatchPlayer.findAndCountAll({
+      const { rows: matchPlayers, count: totalUser } = await TeenPattiMatchPlayer.findAndCountAll({
         where: {
           match_id: matchId,
           is_playing: true,
@@ -240,23 +246,46 @@ async function startMatch ({
 
       if (totalUser <= 5) {
         // if this is a last round
-        const result = await checkWinner(socket, io, matchId, rows);
+        const result = await checkWinner(socket, io, matchId, matchPlayers);
         // now to to 
         if (result === null) {
           await restartDrawGame({ socket, io, matchId });
           return;
         }
+
         await announceWinner({ socket, io, handRank: result }, matchId)
         io.to(matchId).emit(MatchEvent.GameInfo, await generateGameInfo(matchId))
+        return;
       }
+
+      if (passiveUsers >= 5) {
+        restartNextRound();
+        return;
+      }   
+
+      await eliminateUser({ passiveUsers, rows: matchPlayers, matchId });
+      restartDrawGame();
     }, 15000);
   }, 15000);
 }
 
-async function joinTeenPattiRoom (matchId = 0, userId, socketId) {
+/**
+ * This asynchronous function allows a user to join a Teen Patti room.
+ *
+ * @param {number} matchId - The unique identifier of the match.
+ * @param {number} userId - The unique identifier of the user.
+ * @param {string} socketId - The unique identifier of the socket connection.
+ *
+ * @returns {Promise<Model>} A promise that resolves to a TeenPattiMatchPlayer object.
+ *
+ * The function works as follows:
+ * 1. It creates a new TeenPattiMatchPlayer with the provided match ID, user ID, and socket ID.
+ * 2. It returns a promise that resolves to the newly created TeenPattiMatchPlayer object.
+ */
+async function joinTeenPattiRoom (matchId, userId, socketId) {
   console.log(`socket_id: ${socketId}`);
-  const teenPattiMatchPlayer = TeenPattiMatchPlayer.create({ match_id: matchId, user_id: userId, socket_id: socketId });
-  return await teenPattiMatchPlayer;
+  const teenPattiMatchPlayer = await TeenPattiMatchPlayer.create({ match_id: matchId, user_id: userId, socket_id: socketId });
+  return teenPattiMatchPlayer;
 }
 
 // start generate Game Notification function
@@ -293,10 +322,7 @@ function generateGameNotification ({
 async function checkWinner (socket, io, matchId, rows) {  
   /** @type {Array<TeenPattiHandRanking>} Lists of sorted HandRank */
   const handRanking = getSortedHandRanking(rows);
-  console.log(handRanking);
-  for (const iterator of handRanking) {
-    console.log(iterator.cards)
-  }
+ 
   const highestHandRank = Math.max(...handRanking.map(item => item.handRank)); // finding the highest hand rank
 
   /** 
@@ -409,19 +435,50 @@ async function forwardMessage (socket, io, message, matchId, userId) {
   socket.to(matchId).emit(MatchEvent.RoomMessage, generatedMessage);
 }
 
-// this is the private function 
-async function eliminateUser({ numberOfUser = 5, users = [], io = new Server() }) {
-  for (let index = 0; index < numberOfUser; index++) {
-    users[index].setDataValue("is_playing", false);
-    await users[index].save();
-    const message = generateGameNotification({
-      job: "append",
-      message: "have been eliminated"
-    });
-    io.to(users[index].getDataValue("socket_id")).emit("roomMessage", message);
-    io.to(users[index].getDataValue("socket_id")).emit("amIActive", false);
+/**
+ * 
+ * @param {Object} options
+ * @param {Array<Model>} options.rows
+ * @param {number} options.passiveUsers 
+ * @param {number} options.matchId
+ */
+async function eliminateUser({ rows, passiveUsers, matchId }) {
+// Initialize an array to store the temporarily removed lowest hand ranks.
+  const removedHandRanks = [];  
+  let handRanking = getSortedHandRanking(rows);
+  // totalUser = 12;
+  // passiveUsers = 2  
+  let indexLength = 5;
+  const totalUser = rows.length;
+  if (totalUser < 10) {
+    // if total user is 9-6 then eliminate user to keep 5 users at the end 
+    indexLength = totalUser % 5;
+  }  
+  for (let i = passiveUsers; i <= indexLength;) {
+    const lowestRank = Math.min(...handRanking.map(item => item.handRank)); // finding the lowest hand rank
+    // now find the count of lowest hand rank in the array handRanking
+    let lowestHandRanks = handRanking.filter(item => item.handRank === lowestRank);
+    lowestHandRanks = sortCardUnit(lowestHandRanks);
+    const toBeEliminatedPlayers = 5 - i;
+    if (lowestHandRanks.length >= toBeEliminatedPlayers) {
+      removedHandRanks.push(...lowestHandRanks.slice(0, toBeEliminatedPlayers - 1))
+      i += lowestHandRanks.length;
+    } else {
+      removedHandRanks.push(...lowestHandRanks.slice(0, lowestHandRanks.length - 1));
+      i += lowestHandRanks.length;
+    }
+    // remove elements from the  handRanking which are in the removedHandRanks. This is not implemented yet
+    handRanking = handRanking.filter(item => !removedHandRanks.includes(item));
   }
-  return MatchResult.NextRound;
+  /** The Teen patti match players who needs to be removed */
+  const toBeRemovedPlayers = await TeenPattiMatchPlayer.findAll({ 
+    where: {
+      match_id: matchId,
+      user_id: {
+        in: removedHandRanks.map(element => element.user.user_id)
+      }
+    }
+  });
 }
 
 async function restartDrawGame({ socket = new Socket(), io = new Server(), matchId = 0 }) { 
@@ -653,6 +710,10 @@ async function announceWinner(options, matchId) {
   io.to(matchId).emit(MatchEvent.RoomMessage, message);
   io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Ideal.toLowerCase());
   io.to(matchId).emit(MatchEvent.AmIActive, false);
+}
+
+async function restartNextRound(){
+
 }
 
 /**
@@ -895,5 +956,13 @@ function checkCardUnit(handRanks) {
     return null;
   }
   return temporaryHandRank;
+}
+
+/**
+ * 
+ * @param {Array<TeenPattiHandRanking>} handRanks 
+ */
+function sortCardUnit(handRanks) {
+
 }
 module.exports = { startMatch, joinTeenPattiRoom, checkWinner, generateGameNotification, restartDrawGame, onJoinGame, onCardShow, generateGameInfo, forwardMessage };
