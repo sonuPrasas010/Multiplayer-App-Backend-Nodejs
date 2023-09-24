@@ -21,7 +21,7 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 app.set("trust proxy", true)
-dotenv.config(); // Load environment variables
+dotenv.config();
 
 const testSocketNamespace = io.of("/low-card-game");
 lowCardGameSocket(testSocketNamespace)

@@ -1,5 +1,4 @@
 const User = require("../model/databases/user");
-const dotenv = require("dotenv");
 const jwt = require("jsonwebtoken");
 const { sendGoodResponse } = require("../utilty");
 

@@ -1,11 +1,12 @@
 const { Sequelize } = require("sequelize");
+require("dotenv").config();
 
 const sequelize = new Sequelize(
-  "laravel",
-  "root",
+  `${process.env.DB_DATABASE}`,
+  `${process.env.DB_USER}`,
   null,
   {
-    host: "localhost",
+    host: `${process.env.DB_HOST}`,
     dialect: "mysql"
   }
 );
