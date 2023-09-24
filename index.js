@@ -6,7 +6,6 @@ const { teenPattiGameSocket } = require("./controller/teen_patti");
 const googleLogin = require("./controller/authentication");
 const dotenv = require("dotenv");
 const bodyParser = require("body-parser");
-const jwt = require("jsonwebtoken");
 
 // const  seedUser  = require("./seeder/user_seeder")();
 
