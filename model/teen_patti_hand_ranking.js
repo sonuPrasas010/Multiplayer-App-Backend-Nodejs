@@ -8,7 +8,7 @@ class TeenPattiHandRanking {
    * @constructor
    * @param {Number} handRank Represents rank of hand e.g., HighCard = 0, Pair = 1
    * @param {Number} unit Represents the unit of card. This is useful when HandRank is Draw
-   * @param {Object} user Represents who is the owner of the cards
+   * @param {Model} user Represents who is the owner of the cards
    * @param {Array<Card>} cards Represents the cards as the models data
    */
   constructor(handRank, unit, user, cards) {

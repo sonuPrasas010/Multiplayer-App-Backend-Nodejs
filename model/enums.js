@@ -60,9 +60,17 @@ const MatchResult = {
   NextRound: "NextRound"
 }
 
+const SentBy = {
+  User: "User",
+  Bot: "Bot"
+}
+
 const MatchEvent = {
   GameInfo: "gameInfo",
-  RoomMessage: "roomMessage"
+  RoomMessage: "roomMessage",
+  GameStatus: "gameStatus",
+  AmIActive: "amIActive",
+  ClientMessage: "clientMessage"
 }
   
-module.exports = { MessageType, GameStatus, Suit, Rank, HandRanking, MatchResult, MatchEvent };
+module.exports = { MessageType, GameStatus, Suit, Rank, HandRanking, MatchResult, MatchEvent, SentBy };

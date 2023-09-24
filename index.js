@@ -3,6 +3,11 @@ require("./model/config/relations");
 const { makeMatch, lowCardGameSocket } = require("./controller/low_card");
 const { getGamePointVideo, collectGamePointVideo, getGamePointSpin, collectGamePointSpin, getGamePointScratch, collectGamePointScratch } = require("./controller/earn_game_point");
 const { teenPattiGameSocket } = require("./controller/teen_patti");
+const googleLogin = require("./controller/authentication");
+const dotenv = require("dotenv");
+const bodyParser = require("body-parser");
+const jwt = require("jsonwebtoken");
+
 // const  seedUser  = require("./seeder/user_seeder")();
 
 const port = 8000;
@@ -11,7 +16,12 @@ const app = require("express")();
 const http = require("http").Server(app);
 const io = require("socket.io")(http);
 
+// Parse JSON and URL-encoded request bodies
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
 app.set("trust proxy", true)
+dotenv.config();
 
 const testSocketNamespace = io.of("/low-card-game");
 lowCardGameSocket(testSocketNamespace)
@@ -26,7 +36,8 @@ sequelize.authenticate().then(() => {
 app.get("/", (req, res) => {
   res.send("Hello World!");
 });
- 
+
+app.post("/google-signin", googleLogin) 
 app.get("/make-match", makeMatch);
 app.get("/getGamePointVideo", getGamePointVideo);
 app.get("/collectGamePointVideo", collectGamePointVideo);
