@@ -7,6 +7,7 @@ const { Server } = require("socket.io");
 const User = require("../model/databases/user");
 const { MessageType, MatchEvent } = require("../model/enums");
 const LowCardMatchPlayer = require("../model/databases/low_card_match_player");
+const socket_auth = require("../middleware/socket_auth");
 
 // room message are those events that are sent on behalf of room like joining room
 // action me
@@ -37,8 +38,11 @@ const makeMatch = async (req = request, res = response) => {
 };
 
 const lowCardGameSocket = (io = new Server()) => {
+  io.use((socket, next) => {
+    socket_auth(socket, next);
+  });
   io.on("connect", async (socket) => {
-    const userId = socket.handshake.query.user_id;
+    const userId = socket.userId;
     let lowCardMatchId = null;
     let lowCardMatchPlayerId = null;
     // console.log(userId);

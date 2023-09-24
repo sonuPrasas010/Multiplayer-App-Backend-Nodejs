@@ -16,7 +16,6 @@ const TeenPattiHandRanking = require("../model/teen_patti_hand_ranking");
 const Card = require("../model/card");
 // eslint-disable-next-line no-unused-vars
 const { Model } = require("sequelize");
-const CountryReward = require("../model/databases/country_reward");
 
 // this is private function
 async function checkOrChangeMatchAvability(matchId, isBotActive = false) {
@@ -249,7 +248,7 @@ async function startMatch (options) {
         const result = await checkWinner(socket, io, matchId, matchPlayers);
         // now to to 
         if (result === null) {
-          await restartDrawGame({ socket, io, matchId });
+          await restartDrawMatch({ socket, io, matchId });
           return;
         }
 
@@ -259,12 +258,12 @@ async function startMatch (options) {
       }
 
       if (passiveUsers >= 5) {
-        restartNextRound();
+        restartDrawMatch();
         return;
       }   
 
       await eliminateUser({ passiveUsers, rows: matchPlayers, matchId });
-      restartDrawGame();
+      restartDrawMatch();
     }, 15000);
   }, 15000);
 }
@@ -338,84 +337,6 @@ async function checkWinner (socket, io, matchId, rows) {
   return winner;
 }
 
-// this is private function
-async function chooseWinner({ totalUser, matchPlayer = [], matchId, io = new Server() }) {
-  if (totalUser === 0) {
-    await TeenPattiMatch.update({ prize: 0, gameStatus: GameStatus.Ideal }, { where: { id: matchId } });
-    io.to(matchId).emit("amIActive", false);
-    io.to(matchId).emit("gameStatus", GameStatus.Ideal.toLowerCase());
-    const message = generateGameNotification({ message: "Nobody won this round", messageType: MessageType.BotDanger });
-    io.to(matchId).emit("roomMessage", message);
-    return;
-  }
-  if (totalUser === 1) {
-    const match = await TeenPattiMatch.findByPk(matchId);
-    const winner = await User.findByPk(matchPlayer[0].user_id);
-    const prize = match.getDataValue("prize");
-    const userCp = winner.getDataValue("cash_point") + prize;
-    match.set("gameStatus", "ideal");
-    match.set("prize", 0); 
-    match.set("isBotActive", false);
-    await match.save()
-    winner.set("cash_point", userCp);
-    matchPlayer[0].set("is_playing", false);
-    matchPlayer[0].set("shown", false);
-    await matchPlayer[0].save();
-    await winner.save();
-
-    await TeenPattiMatchMessages.destroy({ where: { match_id: matchId } });
-    io.to(matchId).emit("amIActive", false);
-    io.to(matchId).emit("gameStatus", GameStatus.Ideal.toLowerCase());
-    const message = generateGameNotification({ message: "won this game", user: winner, job: "append" });
-    io.to(matchId).emit("roomMessage", message);
-    return;
-  }
-  const firstUserRank = JSON.parse(matchPlayer[0].teen_patti_match_message.card).rank;
-  const secondUserRank = JSON.parse(matchPlayer[1].teen_patti_match_message.card).rank;
-  // console.log(JSON.parse(matchPlayer[0].low_card_match_message.card));
-  // console.log("first user rank"+ firstUserRank);
-  // console.log("second user rank"+ secondUserRank);
-  if (firstUserRank === secondUserRank) {
-    return MatchResult.Draw
-  }
-
-  const transaction = await sequelize.transaction();
-  const match = await TeenPattiMatch.findByPk(matchId, { transaction });
-  const winner = await User.findByPk(matchPlayer[0].user_id, { transaction });
-  const prize = match.getDataValue("prize");
-  const userCp = winner.getDataValue("cash_point") + prize;
-  match.set("gameStatus", "ideal");
-  match.set("prize", 0); 
-  match.set("isBotActive", false);
-  await match.save({ transaction })
-  winner.set("cash_point", userCp);
-  await winner.save();
-
-  for (const user of matchPlayer) {
-    user.set("is_playing", false);
-    user.set("shown", false);
-    await user.save({ transaction });
-  }  
-  await TeenPattiMatchMessages.destroy(
-    { where: { match_id: matchId } });
-  await transaction.commit();
-
-  io.to(matchId).emit("gameStatus", GameStatus.Ideal.toLowerCase());
-  io.to(matchId).emit("amIActive", false);
-  const message = generateGameNotification({
-    messageType: MessageType.WinnerAnnouncement,
-    message: `Congratulation ${winner.getDataValue("name")} on wining ${prize} CP`,
-    card: JSON.parse(matchPlayer[0].teen_patti_match_message.card),
-    user: {
-      name: winner.getDataValue("name"),
-      id: winner.getDataValue("id")
-    }
-  });
-  io.to(matchId).emit("roomMessage", message);
-
-  return MatchResult.Finished;
-}
-
 /**
  * Forwards message emitted by user to all the users who has joined the game.
  * This is not a private message
@@ -479,15 +400,34 @@ async function eliminateUser({ rows, passiveUsers, matchId }) {
       }
     }
   });
+  
+  const promises = toBeRemovedPlayers.map(async (toBeRemovedPlayer) => {
+    toBeRemovedPlayer.set("is_playing", false);
+    toBeRemovedPlayer.set("shown", false);
+    return toBeRemovedPlayer.save();
+  });
+
+  await Promise.all(promises);
 }
 
-async function restartDrawGame({ socket = new Socket(), io = new Server(), matchId = 0 }) { 
-  await TeenPattiMatch.update({ gameStatus: "waiting" },
-    {
-      where: {
-        id: matchId
-      }
-    });
+/**
+ * 
+ * @param {Socket} socket 
+ * @param {Server} io 
+ * @param {Number} matchId 
+ */
+async function restartDrawMatch(socket, io, matchId) { 
+  await Promise.all([
+    TeenPattiMatchMessages.destroy({ where: { match_id: matchId } }),
+    TeenPattiMatch.increment("round", { where: { id: matchId } }),
+    await TeenPattiMatch.update({ gameStatus: "waiting" },
+      {
+        where: {
+          id: matchId
+        }
+      })
+  ])
+ 
   io.to(matchId).emit("gameStatus", "waiting")
 
   const message = generateGameNotification({
@@ -495,12 +435,6 @@ async function restartDrawGame({ socket = new Socket(), io = new Server(), match
   });
   io.to(matchId).emit("roomMessage", message);
 
-  await TeenPattiMatchMessages.destroy({
-    where: {
-      match_id: matchId
-    }
-  })
- 
   await shuffleAndDistributeCard({ io, socket, teenPattiMatchId: matchId });
   await TeenPattiMatch.update({ gameStatus: "playing" },
     {
@@ -534,7 +468,7 @@ async function restartDrawGame({ socket = new Socket(), io = new Server(), match
     });
     const matchResult = await checkWinner(socket, io, matchId, rows);
     if (matchResult === null) {
-      restartDrawGame({ socket, io, matchId });
+      restartDrawMatch({ socket, io, matchId });
       return;
     }
     announceWinner({ socket, io, handRank: matchResult }, matchId);
@@ -710,10 +644,6 @@ async function announceWinner(options, matchId) {
   io.to(matchId).emit(MatchEvent.RoomMessage, message);
   io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Ideal.toLowerCase());
   io.to(matchId).emit(MatchEvent.AmIActive, false);
-}
-
-async function restartNextRound(){
-
 }
 
 /**
@@ -965,4 +895,4 @@ function checkCardUnit(handRanks) {
 function sortCardUnit(handRanks) {
 
 }
-module.exports = { startMatch, joinTeenPattiRoom, checkWinner, generateGameNotification, restartDrawGame, onJoinGame, onCardShow, generateGameInfo, forwardMessage };
+module.exports = { startMatch, joinTeenPattiRoom, checkWinner, generateGameNotification, restartDrawGame: restartDrawMatch, onJoinGame, onCardShow, generateGameInfo, forwardMessage };

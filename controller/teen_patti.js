@@ -1,18 +1,25 @@
 const sequelize = require("../model/config/config");
 const { joinTeenPattiRoom, startMatch, onJoinGame, onCardShow, generateGameInfo, forwardMessage } = require("../helpers/teen_patti");
-const { Server } = require("socket.io");
 const User = require("../model/databases/user");
 const { MessageType, MatchEvent } = require("../model/enums");
 const TeenPattiMatch = require("../model/databases/teen_patti_match");
 const TeenPattiMatchPlayer = require("../model/databases/teen_patti_match_player");
 const { Model } = require("sequelize");
+const socketAuth = require("../middleware/socket_auth");
 
 // room message are those events that are sent on behalf of room like joining room
 // action me
-
-const teenPattiGameSocket = (io = new Server()) => {
+/**
+ * 
+ * @param {import("socket.io").Server} io 
+ * @returns 
+ */
+const teenPattiGameSocket = (io) => {
+  io.use((socket, next) => {
+    socketAuth(socket, next);
+  });
   io.on("connect", async (socket) => {
-    const userId = socket.handshake.query.user_id;
+    const userId = socket.userId;
 
     /** @type {number | null } Id of currently playing match */
     let teenPattiMatchId = null;
@@ -74,7 +81,6 @@ const teenPattiGameSocket = (io = new Server()) => {
           TeenPattiMatch.findByPk(teenPattiMatchId)
         ]);
 
-        console.log(teenPattiMatch);
         await leaveRoom(teenPattiMatchPlayer, teenPattiMatch.id);
         const message = generateGameNotification({
           message: "Left the group",
