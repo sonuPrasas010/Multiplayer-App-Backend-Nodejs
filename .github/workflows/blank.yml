@@ -26,7 +26,7 @@ jobs:
     - name: 📂 Sync files
       uses: SamKirkland/FTP-Deploy-Action@v4.3.4
       with:
-          server: ftp.samkirkland.com
+          server: ftp.shikshahive.com
           username: "spade@spade.shikshahive.com"
           password: "T#VN^-JoWsFW"
   build:
