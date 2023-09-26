@@ -70,7 +70,8 @@ const MatchEvent = {
   RoomMessage: "roomMessage",
   GameStatus: "gameStatus",
   AmIActive: "amIActive",
-  ClientMessage: "clientMessage"
+  ClientMessage: "clientMessage",
+  Points: "points"
 }
   
 module.exports = { MessageType, GameStatus, Suit, Rank, HandRanking, MatchResult, MatchEvent, SentBy };

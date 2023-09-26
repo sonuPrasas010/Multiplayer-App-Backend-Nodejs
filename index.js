@@ -6,7 +6,7 @@ const { teenPattiGameSocket } = require("./controller/teen_patti");
 const googleLogin = require("./controller/authentication");
 const dotenv = require("dotenv");
 const bodyParser = require("body-parser");
-const jwt = require("jsonwebtoken");
+const User = require("./model/databases/user");
 
 // const  seedUser  = require("./seeder/user_seeder")();
 
@@ -33,8 +33,9 @@ sequelize.authenticate().then(() => {
   // sequelize.sync({ force: true });
 });
 
-app.get("/", (req, res) => {
-  res.send("Hello World!");
+app.get("/", async (req, res) => {
+  // const user = await User.findAll();
+  res.send("Hello World! ");
 });
 
 app.post("/google-signin", googleLogin) 
