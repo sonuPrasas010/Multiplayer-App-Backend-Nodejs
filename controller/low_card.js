@@ -8,6 +8,7 @@ const User = require("../model/databases/user");
 const { MessageType, MatchEvent } = require("../model/enums");
 const LowCardMatchPlayer = require("../model/databases/low_card_match_player");
 const socket_auth = require("../middleware/socket_auth");
+const { generatePoints } = require("../helpers/common");
 
 // room message are those events that are sent on behalf of room like joining room
 // action me
@@ -82,6 +83,7 @@ const lowCardGameSocket = (io = new Server()) => {
 
     socket.on("joinMatch", async () => {
       await onJoinGame({ socket, io, matchId: lowCardMatchId, userId });
+      socket.emit(MatchEvent.Points, await generatePoints({ userId }))
       io.to(lowCardMatchId).emit(MatchEvent.GameInfo, await generateGameInfo(lowCardMatchId));
     });
 

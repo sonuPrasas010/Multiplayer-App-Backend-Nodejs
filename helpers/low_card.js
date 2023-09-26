@@ -12,6 +12,8 @@ const LowCardMessages = require("../model/databases/low_card_match_messages");
 const User = require("../model/databases/user");
 const sequelize = require("../model/config/config");
 const { shuffleArray } = require("./shuffle");
+const { Model } = require("sequelize");
+const { generatePoints } = require("./common");
 
 // this is private function
 async function checkOrChangeMatchAvability(matchId, isBotActive = false) {
@@ -24,7 +26,7 @@ async function checkOrChangeMatchAvability(matchId, isBotActive = false) {
   if (match.getDataValue("gameStatus") === "ideal") {
     match.set("isBotActive", isBotActive);
     match.set("gameStatus", "starting");
-    match.save();
+    await match.save();
     return true;
   }
   return false;
@@ -49,7 +51,7 @@ async function checkOrChangeStatusToPlaying(matchId, isBotActive = false) {
 // this is private function 
 
 async function checkStatusToJoiningAvailability(matchId, isBotActive = false) {
-  // return true if user is applcable to join
+  // return true if user is applicable to join
   // else return false 
   console.log(matchId);
   const match = await LowCardMatch.findByPk(matchId);
@@ -67,7 +69,7 @@ async function checkStatusToShowingAvailability(lowCardMatchPlayerId, isBotActiv
   // else return false 
 
   const matchPlayer = await LowCardMatchPlayer.findOne({ 
-    where: { id: lowCardMatchPlayerId, is_playing: false },
+    where: { id: lowCardMatchPlayerId },
     include: { model: LowCardMatch, where: { gameStatus: "playing" } } 
   });
 
@@ -83,7 +85,8 @@ async function onJoinGame({ socket = new Socket(), io = new Server(), matchId, u
 
   if (!ifJoinGameAvailable) return;
   const user = await User.findByPk(userId);
-  if (user.play_point < 10) {
+  console.log(user.toJSON());
+  if (user.game_point < 10) {
     const message = generateGameNotification({
       message: "Sorry! you do not have enough GP to join game",
       messageType: MessageType.BotDanger,
@@ -97,13 +100,13 @@ async function onJoinGame({ socket = new Socket(), io = new Server(), matchId, u
   const match = await LowCardMatch.findByPk(matchId);
   const lowCardMatchPlayer = await LowCardMatchPlayer.findOne({ where: { match_id: matchId, user_id: userId } });
 
-  let userPp = user.getDataValue("play_point");
+  let userPp = user.getDataValue("game_point");
   userPp = userPp - 10;
   let matchPrize = match.getDataValue("prize");
   matchPrize = matchPrize + 10;
 
   lowCardMatchPlayer.set("is_playing", true);
-  user.set("play_point", userPp);
+  user.set("game_point", userPp);
   match.set("prize", matchPrize);
   await user.save({ transaction });
   await match.save({ transaction })
@@ -285,7 +288,7 @@ async function checkWinner (socket = new Socket(), io = new Server(), matchId) {
   }
   const reminder = count % 5;
 
-  if (reminder === 0) {
+  if (count >= 10 || reminder === 0) {
     // if reminder is zero then eliminate 5 user
     return await eliminateUser({ user: rows });
   }
@@ -294,7 +297,14 @@ async function checkWinner (socket = new Socket(), io = new Server(), matchId) {
 }
 
 // this is private function
-async function chooseWinner({ totalUser, matchPlayer = [], matchId, io = new Server() }) {
+/**
+ * 
+ * @param {Object} options
+ * @param {Array<Model>} options.matchPlayer List of LowCardMatchPlayer
+ * @param {import('socket.io').Server } options.io List of LowCardMatchPlayer
+ * @returns 
+ */
+async function chooseWinner({ totalUser, matchPlayer, matchId, io }) {
   if (totalUser === 0) {
     await LowCardMatch.update({ prize: 0, gameStatus: GameStatus.Ideal }, { where: { id: matchId } });
     io.to(matchId).emit("amIActive", false);
@@ -323,6 +333,7 @@ async function chooseWinner({ totalUser, matchPlayer = [], matchId, io = new Ser
     io.to(matchId).emit("gameStatus", GameStatus.Ideal.toLowerCase());
     const message = generateGameNotification({ message: "won this game", user: winner, job: "append" });
     io.to(matchId).emit("roomMessage", message);
+    io.to(matchPlayer[0].socket_id).emit(MatchEvent.Points, await generatePoints({ userId: winner.id }));
     return;
   }
   const firstUserRank = JSON.parse(matchPlayer[0].low_card_match_message.card).rank;
@@ -367,6 +378,8 @@ async function chooseWinner({ totalUser, matchPlayer = [], matchId, io = new Ser
     }
   });
   io.to(matchId).emit("roomMessage", message);
+  // generate message o 
+  io.to(matchPlayer[0].socket_id).emit(MatchEvent.Points, await generatePoints({ userId: winner.id }));
 
   return MatchResult.Finished;
 }
@@ -526,6 +539,7 @@ async function shuffleAndDistributeCard({
 }
 
 async function onCardShow({ socket = new Socket(), io = new Server(), userId, matchId, lowCardMatchPlayerId }) {
+  console.log(lowCardMatchPlayerId);
   if (!await checkStatusToShowingAvailability(lowCardMatchPlayerId)) {
     const message = generateGameNotification({ message: "You are not in this game", messageType: MessageType.BotDanger });
     socket.emit(MatchEvent.RoomMessage, message);
