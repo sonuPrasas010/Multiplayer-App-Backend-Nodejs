@@ -35,7 +35,7 @@ sequelize.authenticate().then(() => {
 
 app.get("/", async (req, res) => {
   // const user = await User.findAll();
-  res.send(`Hello World! ${user}`);
+  res.send("Hello World! ");
 });
 
 app.post("/google-signin", googleLogin) 
