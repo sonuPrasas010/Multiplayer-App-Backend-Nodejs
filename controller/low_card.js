@@ -3,11 +3,12 @@ const LowCardMatch = require("../model/databases/low_card_match");
 const sequelize = require("../model/config/config");
 const { joinLowCardRoom, startMatch, onJoinGame, onCardShow, generateGameInfo } = require("../helpers/low_card");
 
-const { Server } = require("socket.io");
+// eslint-disable-next-line no-unused-vars
+const { Server, Socket } = require("socket.io");
 const User = require("../model/databases/user");
-const { MessageType, MatchEvent } = require("../model/enums");
+const { MessageType, MatchEvent, GameStatus } = require("../model/enums");
 const LowCardMatchPlayer = require("../model/databases/low_card_match_player");
-const socket_auth = require("../middleware/socket_auth");
+const socketAuth = require("../middleware/socket_auth");
 const { generatePoints } = require("../helpers/common");
 
 // room message are those events that are sent on behalf of room like joining room
@@ -38,9 +39,14 @@ const makeMatch = async (req = request, res = response) => {
   }
 };
 
-const lowCardGameSocket = (io = new Server()) => {
+/**
+ * 
+ * @param {Server} io 
+ * @returns 
+ */
+const lowCardGameSocket = (io) => {
   io.use((socket, next) => {
-    socket_auth(socket, next);
+    socketAuth(socket, next);
   });
   io.on("connect", async (socket) => {
     const userId = socket.userId;
@@ -74,17 +80,25 @@ const lowCardGameSocket = (io = new Server()) => {
     }
 
     socket.on("startMatch", async () => {
-      startMatch({
-        socket,
-        io,
-        matchId: lowCardMatchId
-      });
+      try {
+        await startMatch({
+          socket,
+          io,
+          matchId: lowCardMatchId
+        });
+      } catch (error) {
+        console.log(error);
+      }
     });
-
+    
     socket.on("joinMatch", async () => {
-      await onJoinGame({ socket, io, matchId: lowCardMatchId, userId });
-      socket.emit(MatchEvent.Points, await generatePoints({ userId }))
-      io.to(lowCardMatchId).emit(MatchEvent.GameInfo, await generateGameInfo(lowCardMatchId));
+      try {
+        await onJoinGame({ socket, io, matchId: lowCardMatchId, userId });
+        socket.emit(MatchEvent.Points, await generatePoints({ userId }))
+        io.to(lowCardMatchId).emit(MatchEvent.GameInfo, await generateGameInfo(lowCardMatchId));
+      } catch (error) {
+        console.log(error);
+      }
     });
 
     socket.on("show", async() => {
@@ -95,20 +109,18 @@ const lowCardGameSocket = (io = new Server()) => {
     socket.on("disconnect", async () => {
       try {
         console.log("disconnected");
-        const user = User.findByPk(userId);
+        const user = await User.findByPk(userId);
         const lowCardMatchPlayer = await LowCardMatchPlayer.findByPk(lowCardMatchPlayerId);
         const lowCardMatch = await LowCardMatch.findByPk(lowCardMatchId);
-
-        console.log(lowCardMatch);
-        await leaveRoom(lowCardMatchPlayer, lowCardMatch.id);
         const message = generateGameNotification({
-          message: "Left the group",
+          message: "left the group",
           user,
           messageType: MessageType.BotDanger,
           job: "append"
         });
-        socket.to(lowCardMatchId).emit("roomMessage", message);
+        io.to(lowCardMatchId).emit(MatchEvent, message);
         io.to(lowCardMatchId).emit(MatchEvent.GameInfo, await generateGameInfo(lowCardMatchId));
+        await leaveRoom(lowCardMatchPlayer, lowCardMatch.id);
       } catch (error) {
         console.log(error);
       }
@@ -139,7 +151,7 @@ async function jonRoom(userId, socketId) {
     },
     having: sequelize.literal("playerCount <= 20")
   });
-  console.log(`Join room socketid: ${socketId}`);
+  console.log(`Join room socket id: ${socketId}`);
   if (lowCardMatch) {
     const lowCardMatchPlayer = await joinLowCardRoom(
       lowCardMatch.getDataValue("id"),
@@ -173,16 +185,17 @@ async function leaveRoom(lowCardMatchPlayer) {
             sequelize.literal(
               "(Select COUNT(*) FROM low_card_match_players WHERE low_card_match_players.match_id = low_card_match.id)"
             ),
-            "playerCount",
-          ],
-        ],
-      },
+            "playerCount"
+          ]
+        ]
+      }
     }
   );
   // if low card makeMatch has 0 player then formatting its attributes
   if (lowCardMatch.getDataValue("playerCount") > 0) return;
   lowCardMatch.set("isBotActive", false);
-  lowCardMatch.set("gameStatus", "ideal");
+  lowCardMatch.set("gameStatus", GameStatus.Ideal);
+  lowCardMatch.set("round", 1);
   await lowCardMatch.save();
 }
 

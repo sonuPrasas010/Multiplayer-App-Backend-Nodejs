@@ -1,4 +1,7 @@
 const { Socket, Server } = require("socket.io");
+// eslint-disable-next-line no-unused-vars
+const { Model } = require("sequelize");
+
 // const {
 //   LowCardMatchPlayer,
 //   LowCardMatch,
@@ -12,7 +15,6 @@ const LowCardMessages = require("../model/databases/low_card_match_messages");
 const User = require("../model/databases/user");
 const sequelize = require("../model/config/config");
 const { shuffleArray } = require("./shuffle");
-const { Model } = require("sequelize");
 const { generatePoints } = require("./common");
 
 // this is private function
@@ -122,9 +124,18 @@ async function onJoinGame({ socket = new Socket(), io = new Server(), matchId, u
   io.to(matchId).emit("amIActive", true)
 }
 
+/**
+ * FUnction to start low card match. First it checks of the 
+ * @param {Object} options 
+ * @param {Socket} options.socket 
+ * @param {Server} options.io 
+ * @param {number} options.matchId
+ * @returns 
+ */
+
 async function startMatch ({
-  socket = new Socket(),
-  io = new Server(),
+  socket,
+  io,
   matchId
 }) { 
   if (!(await checkOrChangeMatchAvability(matchId))) {
@@ -155,14 +166,13 @@ async function startMatch ({
 
     io.to(matchId).emit("gameStatus", "waiting");
     const { rows, count } = await LowCardMatchPlayer.findAndCountAll({ where: { is_playing: true, match_id: matchId }, include: [LowCardMatch, User] });
-    console.log(count);
+
     if (count < 2) {
       // if there is no more than 1 player joined game cancel the game
       for (const matchPlayer of rows) {
-        console.log("hello match player");
+        /**  @type {number} The amount of play point that should be returned to users */
         let playerPoint = matchPlayer.user.play_point;
         playerPoint += 10;
-        console.log(playerPoint);
         await User.update({ play_point: playerPoint }, { where: { id: matchPlayer.user.id } });
         matchPlayer.set("is_playing", false);
         await matchPlayer.save();
@@ -208,11 +218,12 @@ async function startMatch ({
 
       const result = await checkWinner(socket, io, matchId);
       if (result === MatchResult.Draw) {
-        await restartDrawGame({ socket, io, matchId });
+        // await restartDrawGame({ socket, io, matchId });
+        startNextRound(io, socket, matchId)
         return;
       }
       if (result === MatchResult.NextRound) {
-        // 
+        startNextRound()
       }
     }, 15000);
   }, 15000);
@@ -232,7 +243,7 @@ function generateGameNotification ({
   card,
   user = {
     name: "Bot",
-    id: 1
+    id: -1
   },
   job
 }) {
@@ -288,7 +299,7 @@ async function checkWinner (socket = new Socket(), io = new Server(), matchId) {
   }
   const reminder = count % 5;
 
-  if (count >= 10 || reminder === 0) {
+  if (count >= 10) {
     // if reminder is zero then eliminate 5 user
     return await eliminateUser({ user: rows });
   }
@@ -314,6 +325,7 @@ async function chooseWinner({ totalUser, matchPlayer, matchId, io }) {
     return;
   }
   if (totalUser === 1) {
+    // if there is only one user who show his card then he is winner 
     const match = await LowCardMatch.findByPk(matchId);
     const winner = await User.findByPk(matchPlayer[0].user_id);
     const prize = match.getDataValue("prize");
@@ -342,6 +354,7 @@ async function chooseWinner({ totalUser, matchPlayer, matchId, io }) {
   // console.log("first user rank"+ firstUserRank);
   // console.log("second user rank"+ secondUserRank);
   if (firstUserRank === secondUserRank) {
+    // if first and send user has same card then the game is draw
     return MatchResult.Draw
   }
 
@@ -378,7 +391,7 @@ async function chooseWinner({ totalUser, matchPlayer, matchId, io }) {
     }
   });
   io.to(matchId).emit("roomMessage", message);
-  // generate message o 
+  console.log(winner.id);
   io.to(matchPlayer[0].socket_id).emit(MatchEvent.Points, await generatePoints({ userId: winner.id }));
 
   return MatchResult.Finished;
@@ -400,13 +413,14 @@ async function eliminateUser({ numberOfUser = 5, users = [], io = new Server() }
 }
 
 async function restartDrawGame({ socket = new Socket(), io = new Server(), matchId = 0 }) { 
+  io.to(matchId).emit("gameStatus", "waiting")
   await LowCardMatch.update({ gameStatus: "waiting" },
     {
       where: {
         id: matchId
       }
     });
-  io.to(matchId).emit("gameStatus", "waiting")
+  await LowCardMatch.increment("round", { where: { id: matchId } });
 
   const message = generateGameNotification({
     message: "Please wait! Shuffling card"
@@ -423,7 +437,7 @@ async function restartDrawGame({ socket = new Socket(), io = new Server(), match
   const drawedPlayers = await LowCardMatchPlayer.findAll({
     where: {
       match_id: matchId,
-      isPlaying: true
+      is_playing: true
     },
     include: User
   }
@@ -458,8 +472,8 @@ async function restartDrawGame({ socket = new Socket(), io = new Server(), match
       }
     });
 
-  io.to(matchId).emit("startTime", new Date());
-  io.to(matchId).emit("gameStatus", "playing")
+  io.to(matchId).emit(MatchEvent.StartTime, new Date());
+  io.to(matchId).emit(MatchEvent.GameStatus, "playing")
 
   setTimeout(async() => {
     const matchResult = await checkWinner(socket, io, matchId);
@@ -498,7 +512,9 @@ async function shuffleAndDistributeCard({
   });
   io.to(lowCardMatchId).emit("roomMessage", message);
 
-  const shuffledCard = shuffleArray();
+  let shuffledCard = shuffleArray();
+  shuffledCard = shuffleArray(shuffledCard)
+  shuffledCard = shuffleArray(shuffledCard)
 
   // fetch all the players who have joined current room and joined the game in within 15 sec.
   const joinedPlayers = await LowCardMatchPlayer.findAll({
@@ -506,7 +522,8 @@ async function shuffleAndDistributeCard({
     where: {
       match_id: lowCardMatchId,
       is_playing: true
-    }
+    },
+    order: sequelize.random()
   });
 
   const playersCards = [];
@@ -566,7 +583,6 @@ async function onCardShow({ socket = new Socket(), io = new Server(), userId, ma
 
 async function generateGameInfo(matchId) { 
   try {
-    LowCardMatchPlayer.findAll()
     return await LowCardMatch.findOne(
       {
         where: { id: matchId },
@@ -583,8 +599,63 @@ async function generateGameInfo(matchId) {
         include: { model: LowCardMatchPlayer, where: { is_playing: true }, required: false, include: [LowCardMessages, User]/*, where: { is_playing: true } */ }
       });
   } catch (err) {
-    return err;
+    console.log(err)
   }
+}
+
+/**
+ * Start next round. This function runs on final round as well as other round.
+ * @param {Server} io 
+ * @param {Socket} socket 
+ * @param {number} matchId Id of low card game that is about to restart
+ */
+async function startNextRound(io, socket, matchId) {
+  let message = generateGameNotification({ message: "Starting next round. Please wait." });
+  io.to(matchId).emit(MatchEvent.RoomMessage, message);
+  io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Waiting);
+
+  await LowCardMatch.update({ gameStatus: GameStatus.Waiting }, { where: { id: matchId } });
+  await LowCardMatch.increment("round", { where: { id: matchId }, by: 1 });
+  await LowCardMessages.destroy({ where: { match_id: matchId } });
+  
+  await LowCardMatch.update({ gameStatus: GameStatus.Joining }, { where: { id: matchId } })
+  io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Joining);
+  io.to(matchId).emit(MatchEvent.StartTime, new Date());
+  console.log("Joining game time started.")
+
+  setTimeout(async () => {
+    console.log("Joining time finished after 15 seconds");
+    io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Waiting)
+    await LowCardMatch.update({ gameStatus: GameStatus.Waiting }, { where: { id: matchId } });
+
+    await shuffleAndDistributeCard({ io, socket, lowCardMatchId: matchId });
+    
+    await LowCardMatch.update({ gameStatus: "playing" }, { where: { id: matchId } })
+
+    io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Playing.toLowerCase());
+    io.to(matchId).emit(MatchEvent.StartTime, new Date());
+    console.log("Showing time started");
+
+    setTimeout(async () => {
+      console.log("Showing time finished after 15 seconds");
+      io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Waiting.toLowerCase())
+      await LowCardMatch.update({ gameStatus: GameStatus.Waiting }, { where: { id: matchId } });
+
+      message = generateGameNotification({ message: "Checking winner. Please wait!", messageType: MessageType.BotInfo });
+      io.to(matchId).emit(MatchEvent.RoomMessage, message);
+      
+      await eliminatePassiveUser({ io, socket, lowCardMatchId: matchId });
+
+      const result = await checkWinner(socket, io, matchId);
+      if (result === MatchResult.Draw) {
+        await startNextRound(io, socket, matchId);
+        return;
+      }
+      if (result === MatchResult.NextRound) {
+        startNextRound()
+      }
+    }, 15000);
+  }, 15000)
 }
 
 module.exports = { startMatch, joinLowCardRoom, checkWinner, generateGameNotification, restartDrawGame, onJoinGame, onCardShow, generateGameInfo };
