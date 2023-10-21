@@ -9,10 +9,11 @@ const { MatchEvent } = require("../model/enums");
  * @param {String} options.socketId
  */
 async function generatePoints(options) {
-  const { userID, io, socketId } = options;
-  const user = await User.findByPk(userID, { attributes: ["cash_point", "game_point"] });
+  const { userId, io, socketId } = options;
+  const user = await User.findByPk(userId, { attributes: ["cash_point", "game_point"] });
+  console.log(userId);
+  console.log(user.toJSON());
   return user;
-  io.to(socketId).emit(MatchEvent.Points, user.toJSON());
 }
 
 module.exports = {

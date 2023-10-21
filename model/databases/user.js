@@ -18,7 +18,7 @@ const User = sequelize.define("user", {
   },
   image: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: true
   },
   cash_point: {
     type: DataTypes.INTEGER.UNSIGNED,
