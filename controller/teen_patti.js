@@ -61,7 +61,7 @@ const teenPattiGameSocket = (io) => {
       io.to(teenPattiMatchId).emit(MatchEvent.GameInfo, await generateGameInfo(teenPattiMatchId));
     });
 
-    socket.on("show", async() => {
+    socket.on(MatchEvent.Show, async() => {
       await onCardShow({ socket, io, userId, matchId: teenPattiMatchId, teenPattiMatchPlayerId });
       io.to(teenPattiMatchId).emit(MatchEvent.GameInfo, await generateGameInfo(teenPattiMatchId));
     });

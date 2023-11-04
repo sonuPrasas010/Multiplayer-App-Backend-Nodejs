@@ -45,6 +45,7 @@ TeenPattiMatch.hasMany(TeenPattiMatchMessages, { foreignKey: "match_id" });
 
 User.hasOne(TicTacToeMatchPlayer, { foreignKey: "user_id" });
 TicTacToeMatchPlayer.belongsTo(User, { foreignKey: "user_id" });
+
 TicTacToeMatch.hasMany(TicTacToeMatchPlayer, { foreignKey: "match_id", onDelete: "CASCADE" });
 TicTacToeMatchPlayer.belongsTo(TicTacToeMatch, { foreignKey: "match_id", onDelete: "CASCADE" })
 

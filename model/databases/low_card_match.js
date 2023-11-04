@@ -25,7 +25,10 @@ const LowCardMatch = sequelize.define("low_card_match", {
   started_on: {
     type: DataTypes.DATE
   },
-
+  move_id: {
+    type: DataTypes.STRING,
+    
+  },
   gameStatus: {
     allowNull: false,
     defaultValue: "ideal",

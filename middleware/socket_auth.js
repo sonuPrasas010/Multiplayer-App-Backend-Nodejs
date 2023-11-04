@@ -16,7 +16,7 @@ module.exports = (socket, next) => {
     }
 
     // Attach the decoded token payload (e.g., user ID) to the socket object
-    console.log(decoded);
+    // console.log(decoded);
     socket.userId = decoded.id;
     next();
   });
