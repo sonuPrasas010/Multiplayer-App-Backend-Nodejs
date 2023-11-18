@@ -14,10 +14,11 @@ const sequelize = require("../config/config");
  * @augments Model
  * 
  * The properties in the `TicTacToeMoves` class are:
-
-- **id**: The primary key of the table, auto-incremented.
-- **match_player_id**: The ID of the player who made the move. It cannot be null.
-- **move**: The move made by the player. It is represented as an ENUM and can take values from 0 to 8. It cannot be null.
+ *
+ * - **id**: The primary key of the table, auto-incremented.
+ * - **match_player_id**: The ID of the player who made the move. It cannot be null.
+ * - **match_id**: The ID of the match in which the move was made. It cannot be null.
+ * - **move**: The move made by the player. It is represented as an ENUM and can take values from 0 to 8. It cannot be null.
  */
 const TicTacToeMoves = sequelize.define("tic_tac_toe_moves", {
   /**
@@ -36,11 +37,22 @@ const TicTacToeMoves = sequelize.define("tic_tac_toe_moves", {
     allowNull: false
   },
   /**
-   * @property {DataTypes.ENUM} move - The move made by the player. It is represented as an ENUM and can take values from 0 to 8. It cannot be null.
+   * @property {DataTypes.BIGINT.UNSIGNED} match_id - The ID of the match in which the move was made. It cannot be null.
+   */
+  match_id: {
+    type: DataTypes.BIGINT.UNSIGNED,
+    allowNull: false
+  },
+  /**
+   * @property {DataTypes.INTEGER} move - The move made by the player. It is represented as an ENUM and can take values from 0 to 8. It cannot be null.
    */
   move: {
-    type: DataTypes.ENUM("0", "1", "2", "3", "4", "5", "6", "7", "8"),
-    allowNull: false
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    validate: {
+      min: 0,
+      max: 8
+    }
   }
 },
 

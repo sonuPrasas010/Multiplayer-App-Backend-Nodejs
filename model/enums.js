@@ -87,6 +87,8 @@ const MatchEvent = {
   Joined: "joined",
   /** @type {string} For block games */
   Turn: "turn",
+  /** @type {string} For block games */
+  DrawInfo: "drawInfo",
   /** @type {string} */
   Cancelled: "cancelled",
   /** @type {string} */

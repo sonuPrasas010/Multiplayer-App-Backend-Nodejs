@@ -18,6 +18,7 @@ const { shuffleArray } = require("./shuffle");
 const TicTacToeMatch = require("../model/databases/tic_tac_toe_match");
 const TicTacToeMatchPlayer = require("../model/databases/tic_tac_toe_match_player");
 const TicTacToeMoves = require("../model/databases/tic_tac_toe_moves");
+const { delay } = require("../utilty");
 
 // this is private function
 /**
@@ -53,7 +54,7 @@ async function findAndJoinRoom(userId, socketId) {
         "playerCount"
       ]]
     },
-    having: sequelize.literal("playerCount = 1")
+    having: sequelize.literal("playerCount < 2")
   });
 
   if (ticTacToeMatch) {
@@ -88,12 +89,9 @@ async function joinTicTacToeRoom (matchId, userId, socketId) {
  * @param {Server} io
  */
 async function waitForPlayer(matchId, matchPlayerId, socket, io) {
-  console.log("Wait for player called");
   /** The number of joined users who are in this match */
   const joined = await TicTacToeMatchPlayer.count({ where: { match_id: matchId } });
-  console.log(joined);
   if (joined === 2) {
-    console.log("Waiting for second player");
     onSecondPersonJoin(socket, io, matchId, matchPlayerId);
   } 
 }
@@ -107,7 +105,8 @@ async function waitForPlayer(matchId, matchPlayerId, socket, io) {
  */
 async function onSecondPersonJoin(socket, io, matchId, matchPlayerId) {
   console.log("Second person joined");
-  const ticTacToeMatchPlayers = await TicTacToeMatchPlayer.findOne({ where: { match_id: matchId }, include: User });
+  const ticTacToeMatchPlayers = await TicTacToeMatchPlayer.findOne({ where: { match_id: matchId }, include: User, order: [["id", "ASC"]] });
+  console.log(ticTacToeMatchPlayers.toJSON());
   const ticTacToeMatch = await TicTacToeMatch.findByPk(matchId);
 
   await TicTacToeMatch.update({ round: 1, game_status: GameStatus.Starting, turn: ticTacToeMatchPlayers.user_id }, { where: { id: matchId } });
@@ -120,7 +119,6 @@ async function onSecondPersonJoin(socket, io, matchId, matchPlayerId) {
   // initiateMove function is commented because it both user's need to acknowledge the MatchEvent.joined 
   // but acknowledge is not implemented yet. So we are listening from user to initiate the move
   // initiateMove(socket, io, matchId, matchPlayerId);
-  // the following code temporary solution
 }
 
 /**
@@ -138,44 +136,60 @@ async function onSecondPersonJoin(socket, io, matchId, matchPlayerId) {
  * @param {Socket} socket 
  * @param {Server} io 
  * @param {number} matchId 
- * @param {number} matchPlayerId 
- * @param {NodeJS.Timeout} interval 
- * @param {NodeJS.Timeout} timeOut 
  */
-async function initiateMove(socket, io, matchId, matchPlayerId) {
+async function initiateMove(socket, io, matchId) {
   /** This is the identifier of the move. First it creates te unique date and unique identifier and then it updates it to . */
+  
   const identifier = await changeIdentifier(matchId)
-
+  console.log("Time" + identifier);
   const match = await TicTacToeMatch.findByPk(matchId);
-  console.log(match);
+
   /** Id of user whose turn is it */
   const turn = match.turn;
-  io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Playing);
-  io.to(matchId).emit(MatchEvent.Turn, turn);
-  io.to(matchId).emit(MatchEvent.StartTime, new Date());
+  match.game_status = GameStatus.Playing;
+  await match.save();
+  /**
+   * Emit Object in the following Format
+   * {
+   *  time: new Date(),
+   *  turn: id,
+   *  game_status: gameStatus
+   * }
+   */
+  io.to(matchId).emit(MatchEvent.StartTime, generateStartTime(new Date(), turn, GameStatus.Playing));
+  console.log("broadcasting StartTime");
   
   const interval = setInterval(async () => {
+    console.log("___=>");
+    console.log("Time" + identifier)
+    const sqlDate = identifier.toISOString().slice(0, 19).replace("T", " "); // Format for MySQL
+    console.log(sqlDate);
+    
     if (!await checkIdentifier(matchId, identifier)) {
       clearIntervalAndTimeout(interval, timeOut);
     }
   }, 1500);
   const timeOut = setTimeout(async() => {
-    if (await checkIdentifier(matchId, identifier)) {
-      clearIntervalAndTimeout(interval, timeOut); 
-      // make a move for user
-    }
+    console.log("hello")
+    if (!await checkIdentifier(matchId, identifier)) return;
+    clearIntervalAndTimeout(interval, timeOut); 
+    makeMoveForUser(socket, io, matchId);
+    // make a move for user
   }, 15000)
 }
 
 /**
  * 
  * @param {number} matchId id of TicTacToe match whose turn needs to be switched
- * @returns {Promise<number>} id of user whose turn is it 
+ * @returns {Promise<number>} id of user whose turn is it
  */
-async function switchTurn(matchId) {
-  const lowCardMatchPlayer = await LowCardMatchPlayer.findOne({ where: { match_id: matchId, turn: { [Op.ne]: 1 } } });
-  await LowCardMatch.update({ turn: lowCardMatchPlayer.user_id });
-  return lowCardMatchPlayer.user_id;
+async function switchTurn(matchId, userId) {
+  const ticTacToeMatch = await TicTacToeMatch.findByPk(matchId);
+  const ticTacToeMatchPlayer = await TicTacToeMatchPlayer.findOne({ where: { match_id: matchId, user_id: { [Op.ne]: ticTacToeMatch.turn } } });
+  console.log(ticTacToeMatchPlayer);
+  ticTacToeMatch.turn = ticTacToeMatchPlayer.user_id;
+  await ticTacToeMatch.save();
+  return ticTacToeMatchPlayer.user_id;
 }
 
 /**
@@ -184,7 +198,7 @@ async function switchTurn(matchId) {
  * @param {object} options - An object containing the following properties:
  * @param {Socket} options.socket - The socket for the user.
  * @param {Server} options.io - The socket.io instance.
- * @param {string} options.move - The move made by the user.
+ * @param {number} options.move - The move made by the user.
  * @param {number} options.matchId - The ID of the match.
  * @param {number} options.playerId - The ID of the player.
  * @param {number} options.matchPlayerId - The ID of the match player.
@@ -195,18 +209,23 @@ async function onUserMove({ socket, io, move, matchId, playerId, matchPlayerId }
   const match = await TicTacToeMatch.findOne({ where: { id: matchId, turn: playerId } });
   if (match == null) return socket.emit(MatchEvent.RoomMessage, "invalid move");
 
-  await changeIdentifier();
-  await TicTacToeMoves.create({ match_player_id: matchPlayerId, move });
+  await changeIdentifier(matchId);
+  const moves = await TicTacToeMoves.create({ match_player_id: matchPlayerId, move: move.toString(), match_id: matchId });
+
+  console.log(moves.toJSON());
+  const gameInfo = await generateGameInfo(matchId);
+  socket.broadcast.emit(MatchEvent.GameInfo, { moves: gameInfo.moves });
+
   /** Id of winner */
-  const result = await checkWinner();
+  const result = await checkWinner(socket, io, matchId);
   if (result == null) {
     await switchTurn(matchId)
-    await initiateMove(socket, io, matchId, matchPlayerId);
+    await initiateMove(socket, io, matchId, matchPlayerId); 
     // switch turn
   } else if (result === 0) {
     startNextRound(io, socket, matchId);
   } else {
-    announceWinner();
+    announceWinner(socket, io, matchId, result);
   }
 }
 // start generate Game Notification function
@@ -250,7 +269,8 @@ async function checkWinner (socket, io, matchId) {
     include: [{ model: TicTacToeMoves }]
   });
 
-  const filledUpMoves = fillUpMoves(matchId);
+  const filledUpMoves = fillUpMoves(matchPlayers);
+  console.log(filledUpMoves);
 
   // check rows
   for (let i = 0; i < 9; i += 3) {
@@ -291,7 +311,9 @@ async function checkWinner (socket, io, matchId) {
  */
 async function changeIdentifier(matchId) {
   const date = new Date();
-  await TicTacToeMatch.update({ move_id: date }, { where: { id: matchId } });
+  console.log(matchId);
+  await TicTacToeMatch.update({ move_id: date.toString() }, { where: { id: matchId } });
+  console.log(`Changing identifier ${date}`);
   return date;
 }
 
@@ -303,12 +325,12 @@ async function changeIdentifier(matchId) {
  * @returns {Promise<boolean>} A promise that resolves to true if a match is found with the given identifier, and false if not.
  */
 async function checkIdentifier(matchId, identifier) {
-  console.log(identifier);
-  const sqlDate = identifier.toISOString().slice(0, 19).replace("T", " "); // Format for MySQL
+  const sqlDate = identifier.toString(); // Format for MySQL
   console.log(sqlDate);
-  const lowCardMatch = await TicTacToeMatch.findOne({ where: { id: matchId, move_id: identifier } });
-  console.log(lowCardMatch);
+  
+  const lowCardMatch = await TicTacToeMatch.findOne({ where: { id: matchId, move_id: sqlDate } });
   if (lowCardMatch == null) return false;
+  console.log(true)
   return true;
 }
 
@@ -373,7 +395,7 @@ async function restartDrawGame({ socket = new Socket(), io = new Server(), match
 
   await LowCardMessages.bulkCreate(playerCards);
  
-  await LowCardMatch.update({ gameStatus: "playing" },
+  await LowCardMatch.update({ gameStatus: GameStatus.Playing },
     {
       where: {
         id: matchId
@@ -398,23 +420,22 @@ async function restartDrawGame({ socket = new Socket(), io = new Server(), match
  * @param {number} matchId 
  * @param {number} winnerId
  */
-async function announceWinner(socket, io, matchId, winnerId) {
-  io.emit(MatchEvent.WinnerAnnouncement, winnerId);
-  io.to(MatchEvent.GameInfo, await generateGameInfo(matchId, winnerId));
+async function announceWinner(socket, io, matchId, winnerId) { 
   const transaction = await sequelize.transaction();
-  const match = await TicTacToeMatch.findByPk(matchId, { include: [{ model: TicTacToeMatchPlayer }, { model: User }] }, transaction);
-  await User.increment("cash_point", { by: match.prize, transaction });
-  await TicTacToeMatch.update({ game_status: GameStatus.Ideal, isBotActive: false, prize: 0, round: 1, turn: null }, { transaction });
+  const match = await TicTacToeMatch.findByPk(matchId, { include: [{ model: TicTacToeMatchPlayer, include: User }] }, transaction);
+  await User.increment("cash_point", { by: match.prize, where: { id: winnerId }, transaction });
+  await TicTacToeMatch.update({ game_status: GameStatus.Ideal, isBotActive: false, prize: 0, round: 1, turn: null }, { where: { id: matchId }, transaction });
   await TicTacToeMatchPlayer.update({ bet: 0 }, { where: { match_id: matchId }, transaction });
-  await transaction
+  await transaction.commit();
+  io.to(matchId).emit(MatchEvent.WinnerAnnouncement, winnerId);
 }
 
 /**
  * 
  * @param {Array} matchPlayers - Instance of TicTacToeMatchPlayer with included their TicTacToeMoves
- * @return {Array} array of filledUpMoves; 
+ * @return array of filledUpMoves; 
  */
-async function fillUpMoves(matchPlayers) {
+function fillUpMoves(matchPlayers) {
   const filledUpMoves = Array(9).fill(null);
   for (const matchPlayer of matchPlayers) {
     for (const move of matchPlayer.tic_tac_toe_moves) {
@@ -424,23 +445,50 @@ async function fillUpMoves(matchPlayers) {
   return filledUpMoves;
 }
 
+/**
+ * This asynchronous function generates game information for a given Tic Tac Toe match.
+ *
+ * @param {number} matchId - The unique identifier for the Tic Tac Toe match.
+ *
+ * @returns 
+ * @example
+ * const gameInfo = await generateGameInfo(123);
+ * console.log(gameInfo);
+ */
 async function generateGameInfo(matchId) { 
   const ticTacToeMatch = await TicTacToeMatch.findByPk(matchId, { include: [{ model: TicTacToeMatchPlayer, include: [{ model: TicTacToeMoves }, { model: User }] }] });
-  console.log(ticTacToeMatch.toJSON());
   const filledUpMoves = fillUpMoves(ticTacToeMatch.tic_tac_toe_match_players);
   const gameInfo = {};
   gameInfo.moves = filledUpMoves;
   gameInfo.gameStatus = ticTacToeMatch.game_status;
   gameInfo.turn = ticTacToeMatch.turn;
+  gameInfo.round = ticTacToeMatch.round;
   gameInfo.players = [];
   for (const ticTacMatchPlayer of ticTacToeMatch.tic_tac_toe_match_players) {
     const user = {};
     user.name = ticTacMatchPlayer.user.name;
     user.id = ticTacMatchPlayer.user.id;
     user.bet = ticTacMatchPlayer.bet;
+    user.image = ticTacMatchPlayer.user.image;
+    console.log("=>=>=>==>=>===>=======");
+    console.log(ticTacMatchPlayer);
     gameInfo.players.push(user);
   }
   return gameInfo;
+}
+
+/**
+ * @param {Date} startTime
+ * @param {number} turn 
+ * @param {string} gameStatus
+ * @returns
+ */
+function generateStartTime(startTime, turn, gameStatus) {
+  return {
+    start_time: startTime,
+    turn: turn,
+    game_status: gameStatus
+  }
 }
 
 /**
@@ -450,57 +498,55 @@ async function generateGameInfo(matchId) {
  * @param {number} matchId Id of low card game that is about to restart
  */
 async function startNextRound(io, socket, matchId) {
-  let message = generateGameNotification({ message: "Starting next round. Please wait." });
-  io.to(matchId).emit(MatchEvent.RoomMessage, message);
-  io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Waiting);
+  console.time("Execution Time");
+  io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Draw);
 
-  await LowCardMatch.update({ gameStatus: GameStatus.Waiting }, { where: { id: matchId } });
-  await LowCardMatch.increment("round", { where: { id: matchId }, by: 1 });
-  await LowCardMessages.destroy({ where: { match_id: matchId } });
-  
-  await LowCardMatch.update({ gameStatus: GameStatus.Joining }, { where: { id: matchId } })
-  io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Joining);
-  io.to(matchId).emit(MatchEvent.StartTime, new Date());
-  console.log("Joining game time started.")
-
-  setTimeout(async () => {
-    console.log("Joining time finished after 15 seconds");
-    io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Waiting)
-    await LowCardMatch.update({ gameStatus: GameStatus.Waiting }, { where: { id: matchId } });
-
-    await shuffleAndDistributeCard({ io, socket, lowCardMatchId: matchId });
-    
-    await LowCardMatch.update({ gameStatus: "playing" }, { where: { id: matchId } })
-
-    io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Playing.toLowerCase());
-    io.to(matchId).emit(MatchEvent.StartTime, new Date());
-    console.log("Showing time started");
-
-    setTimeout(async () => {
-      console.log("Showing time finished after 15 seconds");
-      io.to(matchId).emit(MatchEvent.GameStatus, GameStatus.Waiting.toLowerCase())
-      await LowCardMatch.update({ gameStatus: GameStatus.Waiting }, { where: { id: matchId } });
-
-      message = generateGameNotification({ message: "Checking winner. Please wait!", messageType: MessageType.BotInfo });
-      io.to(matchId).emit(MatchEvent.RoomMessage, message);
-      
-      await eliminatePassiveUser({ io, socket, lowCardMatchId: matchId });
-
-      const result = await checkWinner(socket, io, matchId);
-      if (result === MatchResult.Draw) {
-        await startNextRound(io, socket, matchId);
-        return;
-      }
-      if (result === MatchResult.NextRound) {
-        startNextRound()
-      }
-    }, 15000);
-  }, 15000)
+  await TicTacToeMatch.update({ gameStatus: GameStatus.Draw }, { where: { id: matchId } });
+  await TicTacToeMatch.increment("round", { where: { id: matchId }, by: 1 });
+  await TicTacToeMoves.destroy({ where: { match_id: matchId } });
+  await switchTurn(matchId);
+  const matchPlayers = await TicTacToeMatchPlayer.findAll({ where: { match_id: matchId } });
+  for (const matchPlayer of matchPlayers) {
+    await matchPlayer.increment("bet", { by: 10 });
+    await TicTacToeMatch.increment("prize", { by: 10, where: { id: matchId } });
+  }
+  const gameInfo = await generateGameInfo(matchId);
+  io.to(matchId).emit(MatchEvent.DrawInfo, { moves: gameInfo.moves, players: gameInfo.players, gameStatus: gameInfo.gameStatus, round: gameInfo.round });
+  console.timeEnd("Execution Time");
+  console.time("delay");
+  await delay(3600)
+  console.timeEnd("delay");
+  initiateMove(socket, io, matchId, matchId);
+}
+ 
+/**
+ * 
+ * @param {Socket} socket 
+ * @param {Server} io 
+ * @param {number} matchId 
+ */
+async function makeMoveForUser(socket, io, matchId) {
+  const ticTacToeMatchPlayers = await TicTacToeMatch.findByPk(matchId, { include: { model: TicTacToeMatchPlayer, include: [{ model: TicTacToeMoves }, { model: User }] } });
+  console.log("______________");
+  console.log(ticTacToeMatchPlayers.toJSON());
+  const filledUpMoves = fillUpMoves(ticTacToeMatchPlayers.tic_tac_toe_match_players);
+  const unusedBoard = getUnusedBoard(filledUpMoves)
 }
 
 /**
  * 
- * @param {NodeJS.Timeout} interval 
+ * @param {Array} filledUpMoves 
+ */
+function getUnusedBoard(filledUpMoves) {
+  let i;
+  do {
+    i = Math.floor(Math.random() * 9);
+  } while (filledUpMoves[i] !== null);
+  return i;
+}
+/**
+ * 
+ * @param {NodeJS.Timeout} interval
  * @param {NodeJS.Timeout} timeOut 
  */
 function clearIntervalAndTimeout(interval, timeOut) {
@@ -538,7 +584,7 @@ async function leaveTicTacToeRoom(socket, io, matchId, userId) {
  */
 async function resetRoom(matchId) {
   await TicTacToeMatchPlayer.destroy({ where: { match_id: matchId } });
-  await TicTacToeMatch.update({ round: 1, prize: 0, game_status: GameStatus.Ideal, isBotActive: false, turn: null }, { where: { id: matchId } });
+  await TicTacToeMatch.update({ round: 1, prize: 0, game_status: GameStatus.Ideal, isBotActive: false, turn: null, move_id: null }, { where: { id: matchId } });
 }
 
-module.exports = { waitForPlayer, onUserMove, switchTurn, initiateMove, findAndJoinRoom, checkWinner, leaveTicTacToeRoom, restartDrawGame, generateGameInfo };
+module.exports = { waitForPlayer, onUserMove, switchTurn, initiateMove, findAndJoinRoom, checkWinner, leaveTicTacToeRoom, generateGameInfo };

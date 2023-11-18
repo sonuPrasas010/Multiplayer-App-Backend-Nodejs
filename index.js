@@ -32,7 +32,7 @@ ticTacToeGameSocket(ticTacToeSocketNamespace)
 
 sequelize.authenticate().then(() => {
   console.log("Connection has been established");
-  sequelize.sync({ force: false });
+  // sequelize.sync({ force: true });
 });
 
 app.get("/", async (req, res) => {
