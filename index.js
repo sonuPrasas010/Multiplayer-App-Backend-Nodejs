@@ -6,15 +6,18 @@ const { teenPattiGameSocket } = require("./controller/teen_patti");
 const googleLogin = require("./controller/authentication");
 const dotenv = require("dotenv");
 const bodyParser = require("body-parser");
-const User = require("./model/databases/user");
+const { ticTacToeSinglePlayer, ticTacToeGameSocket } = require("./controller/tic_tac_toe");
 
 // const  seedUser  = require("./seeder/user_seeder")();
 
 const port = 8000;
 
-const app = require("express")();
+const express = require("express");
+const app = express();
 const http = require("http").Server(app);
 const io = require("socket.io")(http);
+
+app.use(express.static("public"));
 
 // Parse JSON and URL-encoded request bodies
 app.use(bodyParser.json());
@@ -27,6 +30,8 @@ const testSocketNamespace = io.of("/low-card-game");
 lowCardGameSocket(testSocketNamespace)
 const teenPattiSocketNamespace = io.of("/teen-patti-game");
 teenPattiGameSocket(teenPattiSocketNamespace)
+const ticTacToeSocketNamespace = io.of("/tic-tac-toe-game");
+ticTacToeGameSocket(ticTacToeSocketNamespace)
 
 sequelize.authenticate().then(() => {
   console.log("Connection has been established");
@@ -36,7 +41,7 @@ sequelize.authenticate().then(() => {
 app.get("/", async (req, res) => {
   // const user = await User.findAll();
   res.send("Hello World! ");
-});
+}); 
 
 app.post("/google-signin", googleLogin) 
 app.get("/make-match", makeMatch);
@@ -47,7 +52,38 @@ app.get("/collectGamePointSpin", collectGamePointSpin);
 app.get("/getGamePointScratch", getGamePointScratch);
 app.get("/collectGamePointScratch", collectGamePointScratch);
 
+app.get("/collectTicTacPoint", ticTacToeSinglePlayer)
+
 http.listen(port, async () => {
   console.log(`http://localhost:${port}/makeMatch`);
   console.log(`Example app listening on port ${port}`);
 });
+
+// let timeout = setTimeout(() => {
+//   console.log("Sonu dhakal");
+// }, 1000); 
+// let interval = setInterval(() => { 
+//   console.log("clear interval and timeOut"); 
+// }, 500);
+// [timeout, interval] = clearIntervals(interval, timeout)
+// setIntervals(timeout, interval);
+// console.log("Low clearing intervals after assigning");
+// clearIntervals(interval, timeout)
+// function clearIntervals(interval, timeout) {
+//   console.log(interval);
+//   console.log(timeout);
+//   clearTimeout(timeout);
+//   clearInterval(interval) 
+//   interval = null;
+//   timeout = null;
+//   return [timeout, interval]
+// }
+
+// function setIntervals(timeOut, interval) {
+//   interval = setInterval(() => { 
+//     console.log("Set interval from setIntervals")
+//   }, 500);
+//   timeOut = setTimeout(() => {
+//     console.log("set Timeout from setIntervals")
+//   }, 2000);
+// }

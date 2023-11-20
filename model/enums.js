@@ -4,7 +4,9 @@ const MessageType = {
   BotDanger: "BotDanger",
   CardShow: "CardShow",
   WinnerAnnouncement: "WinnerAnnouncement",
-  UserMessage: "UserMessage"
+  UserMessage: "UserMessage",
+  /** @type {String} This is used for block games  */
+  CancelMatch: "CancelMatch"
 };
 
 const GameStatus = {
@@ -65,14 +67,44 @@ const SentBy = {
   Bot: "Bot"
 }
 
+/**
+ * @enum {string}
+ */
 const MatchEvent = {
+  /** @type {string} */
   GameInfo: "gameInfo",
+  /** @type {string} */
   RoomMessage: "roomMessage",
+  /** @type {string} */
   GameStatus: "gameStatus",
+  /** @type {string} */
   AmIActive: "amIActive",
-  ClientMessage: "clientMessage",
+  /** @type {string} */
   Points: "points",
-  StartTime: "startTime"
+  /** @type {string} */
+  StartTime: "startTime",
+  /** @type {string} For block games */
+  Joined: "joined",
+  /** @type {string} For block games */
+  Turn: "turn",
+  /** @type {string} For block games */
+  DrawInfo: "drawInfo",
+  /** @type {string} */
+  Cancelled: "cancelled",
+  /** @type {string} */
+  WinnerAnnouncement: "winnerAnnouncement",
+  /** @type {string} Emitted by client */
+  ClientMessage: "clientMessage",
+  /** @type {string} Emitted by client */
+  StartMatch: "startMatch",
+  /** @type {string} Emitted by client */
+  Show: "show"
+  // Add your new events here
+};
+
+const ServerEvents = {
+  ServerJoined: "serverJoined",
+  SwitchTurn: "switchTurn"
 }
   
-module.exports = { MessageType, GameStatus, Suit, Rank, HandRanking, MatchResult, MatchEvent, SentBy };
+module.exports = { MessageType, GameStatus, Suit, Rank, HandRanking, MatchResult, MatchEvent, SentBy, ServerEvents };

@@ -15,8 +15,17 @@ function sendGoodResponse (res, data) {
 function sendBadResponse (res, data) {
   res.status(400).send(data);
 }
+/**
+ * 
+ * @param {number} duration 
+ * @returns 
+ */
+async function delay(duration) {
+  return new Promise(resolve => setTimeout(resolve, duration));
+}
 
 module.exports = {
   sendGoodResponse,
-  sendBadResponse
+  sendBadResponse,
+  delay
 }
