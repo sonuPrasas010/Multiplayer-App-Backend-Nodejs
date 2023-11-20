@@ -82,8 +82,7 @@ const ticTacToeGameSocket = async (io) => {
     });
 
     socket.on("disconnect", () => {
-      console.log("======================>");
-      console.log("Disconnected");
+      console.log("========== Disconnected ============>");
       console.log(userId);
       leaveTicTacToeRoom(socket, io, ticTacToeMatch.id, userId);
     });

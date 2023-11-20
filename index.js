@@ -12,9 +12,12 @@ const { ticTacToeSinglePlayer, ticTacToeGameSocket } = require("./controller/tic
 
 const port = 8000;
 
-const app = require("express")();
+const express = require("express");
+const app = express();
 const http = require("http").Server(app);
 const io = require("socket.io")(http);
+
+app.use(express.static("public"));
 
 // Parse JSON and URL-encoded request bodies
 app.use(bodyParser.json());

@@ -8,13 +8,9 @@ const { Model, Sequelize, Op } = require("sequelize");
 //   LowCardMessages
 // } = require("../model/config/relations");
 
-const { MessageType, MatchResult, GameStatus, MatchEvent } = require("../model/enums");
-const LowCardMatchPlayer = require("../model/databases/low_card_match_player");
-const LowCardMatch = require("../model/databases/low_card_match");
-const LowCardMessages = require("../model/databases/low_card_match_messages");
+const { MessageType, GameStatus, MatchEvent } = require("../model/enums");
 const User = require("../model/databases/user");
 const sequelize = require("../model/config/config");
-const { shuffleArray } = require("./shuffle");
 const TicTacToeMatch = require("../model/databases/tic_tac_toe_match");
 const TicTacToeMatchPlayer = require("../model/databases/tic_tac_toe_match_player");
 const TicTacToeMoves = require("../model/databases/tic_tac_toe_moves");
@@ -37,15 +33,15 @@ const { delay } = require("../utilty");
  * const [match, player] = await findAndJoinRoom(userId, socketId);
  *
  * @description
- * The function first attempts to find a Tic Tac Toe match that only has one player. It does this by querying the TicTacToeMatch model and including a count of associated TicTacToeMatchPlayer models. It then checks if such a match exists.
+ * - The function first attempts to find a Tic Tac Toe match that only has one player. It does this by querying the TicTacToeMatch model and including a count of associated TicTacToeMatchPlayer models. It then checks if such a match exists.
  *
- * If such a match exists, it calls the `joinTicTacToeRoom` function with the match's id, the user's id, and the socket id. This function is responsible for joining the user to the room associated with the match. The `joinTicTacToeRoom` function is expected to return an instance of the TicTacToeMatchPlayer model representing the user's participation in the match. Both the match and player are then returned as an array.
+ * - If such a match exists, it calls the `joinTicTacToeRoom` function with the match's id, the user's id, and the socket id. This function is responsible for joining the user to the room associated with the match. The `joinTicTacToeRoom` function is expected to return an instance of the TicTacToeMatchPlayer model representing the user's participation in the match. Both the match and player are then returned as an array.
  *
- * If no such match exists, it creates a new Tic Tac Toe match by calling `TicTacToeMatch.create()`. It then calls `joinTicTacToeRoom` in the same way as above and returns both the new match and player as an array.
+ * - If no such match exists, it creates a new Tic Tac Toe match by calling `TicTacToeMatch.create()`. It then calls `joinTicTacToeRoom` in the same way as above and returns both the new match and player as an array.
  */
 async function findAndJoinRoom(userId, socketId) {
-  console.log("Find and join room called");
   let ticTacToeMatch = await TicTacToeMatch.findOne({
+    where: { game_status: GameStatus.Ideal },
     attributes: {
       include: [[
         sequelize.literal(
@@ -56,6 +52,14 @@ async function findAndJoinRoom(userId, socketId) {
     },
     having: sequelize.literal("playerCount < 2")
   });
+
+  if (!ticTacToeMatch) {
+    ticTacToeMatch = await TicTacToeMatch.findOne({
+      where: {
+        game_status: GameStatus.Ideal
+      }
+    });
+  }
 
   if (ticTacToeMatch) {
     const ticTacToeMatchPlayer = await joinTicTacToeRoom(ticTacToeMatch.id, userId, socketId);
@@ -115,7 +119,7 @@ async function onSecondPersonJoin(socket, io, matchId, matchPlayerId) {
   const gameInfo = await generateGameInfo(matchId);
   io.emit(MatchEvent.Joined, { players: gameInfo.players, prize: ticTacToeMatch.prize, turn: ticTacToeMatchPlayers.user_id });
 
-  await TicTacToeMatch.update({ game_status: GameStatus.Playing }, { where: { id: matchId } });
+  // await TicTacToeMatch.update({ game_status: GameStatus.Playing }, { where: { id: matchId } });
   // initiateMove function is commented because it both user's need to acknowledge the MatchEvent.joined 
   // but acknowledge is not implemented yet. So we are listening from user to initiate the move
   // initiateMove(socket, io, matchId, matchPlayerId);
@@ -335,96 +339,31 @@ async function checkIdentifier(matchId, identifier) {
 }
 
 /**
- * 
- * @param {Object} options
- * @param {Array<Model>} options.matchPlayer List of LowCardMatchPlayer
- * @param {import('socket.io').Server } options.io List of LowCardMatchPlayer
- * @returns 
- */ 
-
-async function restartDrawGame({ socket = new Socket(), io = new Server(), matchId = 0 }) {
-  io.to(matchId).emit("gameStatus", "waiting")
-  await LowCardMatch.update({ gameStatus: "waiting" },
-    {
-      where: {
-        id: matchId
-      }
-    });
-  await LowCardMatch.increment("round", { where: { id: matchId } });
-
-  const message = generateGameNotification({
-    message: "Please wait! Shuffling card"
-  });
-
-  io.to(matchId).emit("roomMessage", message);
-  const cards = shuffleArray();
-
-  await LowCardMessages.destroy({
-    where: {
-      match_id: matchId
-    }
-  })
-  const drawedPlayers = await LowCardMatchPlayer.findAll({
-    where: {
-      match_id: matchId,
-      is_playing: true
-    },
-    include: User
-  }
-  );
-  
-  const playerCards = [];
-  for (const key in drawedPlayers) {
-    const data = {};
-    data.card = cards[key];
-    data.user_id = drawedPlayers[key].getDataValue("user_id");
-    data.match_id = drawedPlayers[key].getDataValue("match_id"); 
-    data.match_player_id = drawedPlayers[key].getDataValue("id");
-    playerCards.push(data);
-
-    const message = generateGameNotification({
-      card: data.card,
-      messageType: MessageType.CardShow,
-      user: {
-        name: drawedPlayers[key].user.name,
-        id: drawedPlayers[key].user.id
-      }
-    });
-    io.to(drawedPlayers[key].getDataValue("socket_id")).emit("roomMessage", message)
-  }
-
-  await LowCardMessages.bulkCreate(playerCards);
- 
-  await LowCardMatch.update({ gameStatus: GameStatus.Playing },
-    {
-      where: {
-        id: matchId
-      }
-    });
-
-  io.to(matchId).emit(MatchEvent.StartTime, new Date());
-  io.to(matchId).emit(MatchEvent.GameStatus, "playing")
-
-  setTimeout(async() => {
-    const matchResult = await checkWinner(socket, io, matchId);
-    if (matchResult === MatchResult.Draw) {
-      restartDrawGame(socket, io, matchId);
-    }
-  }, 1500);
-}
-
-/**
- * 
- * @param {Socket} socket 
- * @param {Server} io 
- * @param {number} matchId 
- * @param {number} winnerId
+ * This asynchronous function announces the winner of a Tic Tac Toe match.
+ *
+ * @async
+ * @function announceWinner
+ * @param {Socket} socket - The Socket object representing the connection between the server and the client.
+ * @param {Server} io - The Server object representing the socket.io server instance.
+ * @param {number} matchId - The unique identifier of the Tic Tac Toe match.
+ * @param {number} winnerId - The unique identifier of the user who won the match.
+ * @returns {Promise<void>} A Promise that resolves when the function has completed.
+ *
+ * @description
+ * The function performs the following steps:
+ * - Starts a new database transaction.
+ * - Finds the Tic Tac Toe match by its primary key, including the associated players and users.
+ * - Increments the cash point of the winner user by the match prize amount.
+ * - Updates the match status to ideal, resets the prize, round, turn, and move id fields.
+ * - Updates the bet amount of all the match players to zero.
+ * - Commits the transaction to the database.
+ * - Emits a WinnerAnnouncement event to the match room with the winner id.
  */
 async function announceWinner(socket, io, matchId, winnerId) { 
   const transaction = await sequelize.transaction();
   const match = await TicTacToeMatch.findByPk(matchId, { include: [{ model: TicTacToeMatchPlayer, include: User }] }, transaction);
   await User.increment("cash_point", { by: match.prize, where: { id: winnerId }, transaction });
-  await TicTacToeMatch.update({ game_status: GameStatus.Ideal, isBotActive: false, prize: 0, round: 1, turn: null }, { where: { id: matchId }, transaction });
+  await TicTacToeMatch.update({ game_status: GameStatus.Ideal, isBotActive: false, prize: 0, round: 1, turn: null, move_id: null }, { where: { id: matchId }, transaction });
   await TicTacToeMatchPlayer.update({ bet: 0 }, { where: { match_id: matchId }, transaction });
   await transaction.commit();
   io.to(matchId).emit(MatchEvent.WinnerAnnouncement, winnerId);
@@ -526,11 +465,26 @@ async function startNextRound(io, socket, matchId) {
  * @param {number} matchId 
  */
 async function makeMoveForUser(socket, io, matchId) {
-  const ticTacToeMatchPlayers = await TicTacToeMatch.findByPk(matchId, { include: { model: TicTacToeMatchPlayer, include: [{ model: TicTacToeMoves }, { model: User }] } });
-  console.log("______________");
-  console.log(ticTacToeMatchPlayers.toJSON());
-  const filledUpMoves = fillUpMoves(ticTacToeMatchPlayers.tic_tac_toe_match_players);
-  const unusedBoard = getUnusedBoard(filledUpMoves)
+  const ticTacToeMatch = await TicTacToeMatch.findByPk(matchId, { include: { model: TicTacToeMatchPlayer, include: [{ model: TicTacToeMoves }, { model: User }] } });
+  const filledUpMoves = fillUpMoves(ticTacToeMatch.tic_tac_toe_match_players);
+  const unusedBoard = getUnusedBoard(filledUpMoves);
+  const currentPlayer = ticTacToeMatch.tic_tac_toe_match_players.find(player => player.user_id === ticTacToeMatch.turn);
+  await TicTacToeMoves.create({ move: unusedBoard, match_id: matchId, match_player_id: currentPlayer.id });
+
+  const gameInfo = await generateGameInfo(matchId);
+  io.to(matchId).emit(MatchEvent.GameInfo, { moves: gameInfo.moves });
+
+  const result = await checkWinner(socket, io, matchId);
+
+  if (result == null) {
+    await switchTurn(matchId)
+    await initiateMove(socket, io, matchId);
+    // switch turn
+  } else if (result === 0) {
+    startNextRound(io, socket, matchId);
+  } else {
+    announceWinner(socket, io, matchId, result);
+  }
 }
 
 /**
@@ -560,27 +514,61 @@ function clearIntervalAndTimeout(interval, timeOut) {
  * 
  * @param {Socket} socket 
  * @param {Server} io 
- * @param {number} matchId 
- * @param {number} userId 
+ * @param {number} matchId The id of TicTacToeMatch from which user exited
+ * @param {number} userId The id of user who left the room
  */
 async function leaveTicTacToeRoom(socket, io, matchId, userId) {
-  const ticTacMatchPlayers = await TicTacToeMatchPlayer.findAll({ where: { match_id: matchId, user_id: userId } });
-  for (const ticTacMatchPlayer of ticTacMatchPlayers) {
-    User.increment("game_point", { by: ticTacMatchPlayer.bet, where: { id: ticTacMatchPlayer.user_id } });
-    TicTacToeMatch.decrement("prize", { by: ticTacMatchPlayer.bet, where: { id: ticTacMatchPlayer.match_id } });
+  const ticTacMatchPlayers = await TicTacToeMatchPlayer.findAll({ where: { match_id: matchId } });
+  const ticTacToeMatch = await TicTacToeMatch.findByPk(matchId);
+
+  if (ticTacMatchPlayers.length < 2 && ticTacToeMatch.game_status === GameStatus.Ideal.toLowerCase()) {
+    console.table("This is the first data");
+    // if i am the only one player in the room and game is still in ideal position.
+    // i.e. nobody has joined the game in the course of leaving room
+    // return the game_point back to user
+    for (const ticTacMatchPlayer of ticTacMatchPlayers) {
+      await User.increment("game_point", { by: ticTacMatchPlayer.bet, where: { id: ticTacMatchPlayer.user_id } });
+      await TicTacToeMatch.decrement("prize", { by: ticTacMatchPlayer.bet, where: { id: ticTacMatchPlayer.match_id } });
+    }
+    resetRoom(matchId);
+    return;
   }
 
-  if (ticTacMatchPlayers.length < 2) {
-    resetRoom(matchId)
-  } else {
-    socket.broadcast.emit(MatchEvent.Cancelled)
+  if (ticTacMatchPlayers.length < 2 && ticTacToeMatch.game_status !== GameStatus.Ideal.toLowerCase()) {
+    // if last remaining user left after initiating move
+    resetRoom(matchId);
+    return;
+  }
+
+  if (ticTacMatchPlayers.length === 2 && ticTacToeMatch.game_status === GameStatus.Starting.toLowerCase()) {
+    // If both member joined but game is starting yet but has not initiated move
+    // return the game_point back to user
+    for (const ticTacMatchPlayer of ticTacMatchPlayers) {
+      await User.increment("game_point", { by: ticTacMatchPlayer.bet, where: { id: ticTacMatchPlayer.user_id } });
+      await TicTacToeMatch.decrement("prize", { by: ticTacMatchPlayer.bet, where: { id: ticTacMatchPlayer.match_id } });
+      if (ticTacMatchPlayer.user_id === userId) await ticTacMatchPlayer.destroy();
+    }
+    socket.broadcast.emit(MatchEvent.Cancelled, null);
+    return;
+  } 
+
+  if (ticTacMatchPlayers.length === 2) {
+    // if both user joined the game and then one player left room after initiating move
+    for (const ticTacMatchPlayer of ticTacMatchPlayers) {
+      if (ticTacMatchPlayer.user_id === userId) {
+        await ticTacMatchPlayer.destroy();
+        continue;
+      }
+
+      announceWinner(socket, io, matchId, ticTacMatchPlayer.user_id);
+    }
     resetRoom(matchId);
   }
 }
 
 /**
  * 
- * @param {number} matchId 
+ * @param {number} matchId
  */
 async function resetRoom(matchId) {
   await TicTacToeMatchPlayer.destroy({ where: { match_id: matchId } });

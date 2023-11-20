@@ -82,7 +82,7 @@ const TicTacToeMatch = sequelize.define("tic_tac_toe_match", {
     type: DataTypes.BIGINT.UNSIGNED,
     references: User.id
   },
-
+  
   move_id: {
     allowNull: true,
     type: DataTypes.STRING
